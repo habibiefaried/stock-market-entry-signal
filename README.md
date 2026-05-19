@@ -236,7 +236,96 @@ The model uses 2 LSTM layers with decreasing units:
 - `lstm_training_history.png`: Training/validation loss plot
 - `lstm_predictions.png`: Actual vs predicted prices plot
 
-### XGBoost Model (Gradient Boosting)
+### LightGBM Model (Gradient Boosting - Recommended)
+
+Train a LightGBM model:
+
+```bash
+# Basic usage (default parameters)
+python train_lightgbm.py MSFT_daily_data_20260520.csv
+
+# Custom parameters
+python train_lightgbm.py MSFT_daily_data_20260520.csv --n_estimators 1000 --learning_rate 0.01 --num_leaves 31
+```
+
+**Parameters:**
+- `--n_estimators`: Number of trees (default: 1000)
+- `--learning_rate`: Learning rate (default: 0.01)
+- `--num_leaves`: Maximum leaves per tree (default: 31)
+
+**Understanding LightGBM Parameters:**
+
+1. **N_estimators (Number of Trees)**
+   - How many decision trees to build sequentially
+   - `--n_estimators 1000` means: build 1000 trees, each correcting previous errors
+   - Same as XGBoost's n_estimators
+   - **Recommended**: 500-1000 trees
+
+2. **Learning Rate (Shrinkage)**
+   - Controls how much each tree contributes to final prediction
+   - `--learning_rate 0.01` means: each tree contributes 1% of its prediction
+   - Same concept as XGBoost
+   - **Recommended**: 0.01-0.05 for stock prediction
+
+3. **Num Leaves (LightGBM Specific)**
+   - Maximum number of leaves in one tree
+   - `--num_leaves 31` means: tree can have up to 31 leaf nodes
+   - **Different from XGBoost's max_depth!**
+   - Roughly equivalent to `2^max_depth` in XGBoost
+   - **Shallow (e.g., 15-31)**: Simple patterns, prevents overfitting
+   - **Deep (e.g., 63-127)**: Complex patterns, may overfit
+   - **Recommended**: 15-31 for financial data
+
+**LightGBM vs XGBoost Key Differences:**
+
+1. **Tree Growth Strategy:**
+   - XGBoost: Level-wise (balanced tree, slower but safer)
+   - LightGBM: Leaf-wise (splits leaf with max loss reduction - faster, often more accurate)
+
+2. **Speed:**
+   - LightGBM is 2-4x faster on large datasets
+   - Uses histogram-based algorithms
+
+3. **Memory:**
+   - LightGBM uses less memory (more efficient)
+
+4. **Accuracy:**
+   - Often better out-of-the-box accuracy
+   - Less hyperparameter tuning needed
+
+**How LightGBM Works for Stock Prediction:**
+
+1. **Feature Engineering**: Same as XGBoost - creates lag features:
+   - `Close_lag_1, Close_lag_2, ...`: Previous days' closing prices
+   - `Volume_lag_1, Volume_lag_2, ...`: Previous days' volumes
+   - `Price_change_1d, Price_change_5d`: Price change percentages
+   - `Volatility_5d, Volatility_10d`: Rolling price volatility
+
+2. **Leaf-wise Tree Building**:
+   - Finds leaf with maximum delta loss
+   - Splits that leaf (vs XGBoost splitting all leaves at same level)
+   - More efficient path to optimal tree structure
+
+3. **Final Prediction**: Sum of all tree predictions × learning_rate
+
+4. **Feature Importance**: Shows which features matter most (saved as plot)
+
+**Advantages of LightGBM:**
+- Faster training than XGBoost (especially on large datasets)
+- Often better accuracy with default parameters
+- Less memory usage
+- Interpretable (can see which features are important)
+- GPU support (CUDA)
+
+**Outputs:**
+- `lightgbm_model.pkl`: Trained LightGBM model
+- `lightgbm_scaler.pkl`: Feature scaler (for standardizing inputs)
+- `lightgbm_features.txt`: List of all features used (including lag features)
+- `lightgbm_model_info.txt`: Model performance metrics
+- `lightgbm_feature_importance.png`: Feature importance plot (shows what model focuses on)
+- `lightgbm_predictions.png`: Actual vs predicted prices plot
+
+### XGBoost Model (Gradient Boosting - Alternative)
 
 Train an XGBoost model:
 
@@ -319,7 +408,7 @@ python train_xgboost.py MSFT_daily_data_20260519.csv --n_estimators 1000 --learn
 
 ### Model Evaluation Metrics
 
-Both models provide:
+All models provide:
 
 **Regression Metrics** (Price Prediction):
 - **MAE** (Mean Absolute Error): Average price prediction error in dollars
@@ -337,13 +426,19 @@ Both models provide:
 # Step 1: Fetch 36 months of MSFT data (default)
 python fetch_stock_data.py MSFT
 
-# Step 2: Train LSTM model
+# Step 2: Train LSTM model (deep learning)
 python train_lstm.py MSFT_daily_data_20260520.csv
 
-# Step 3: Train XGBoost model
+# Step 3: Train LightGBM model (recommended - fastest, often most accurate)
+python train_lightgbm.py MSFT_daily_data_20260520.csv
+
+# Step 4: Train XGBoost model (alternative gradient boosting)
 python train_xgboost.py MSFT_daily_data_20260520.csv
 
-# Step 4: Compare results and choose the best model
+# Step 5: Compare results and choose the best model
+# - Compare test MAE (lower is better)
+# - Compare direction accuracy (higher is better)
+# - Check predictions.png for visual comparison
 ```
 
 ## Notes
@@ -353,6 +448,8 @@ python train_xgboost.py MSFT_daily_data_20260520.csv
 - Cryptocurrency markets trade 24/7, so they may have more data points than stocks
 - Data is fetched from Yahoo Finance via yfinance library
 - LSTM models are better for capturing long-term dependencies in time series
-- XGBoost models are faster to train and easier to interpret (feature importance)
-- Both models use 30 months for training and 6 months for testing
+- LightGBM is recommended for tabular data (often faster and more accurate than XGBoost)
+- XGBoost and LightGBM are easier to interpret (feature importance plots)
+- All models use 30 months for training and 6 months for testing
 - LSTM simplified to 2 layers (64→32 units) with 30% dropout for better performance on financial data
+- LightGBM uses leaf-wise tree growth (2-4x faster than XGBoost's level-wise)
