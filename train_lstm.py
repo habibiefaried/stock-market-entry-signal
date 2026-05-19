@@ -23,6 +23,10 @@ import os
 os.environ['KERAS_BACKEND'] = 'torch'  # Use PyTorch instead of TensorFlow
 # This enables GPU acceleration on Windows!
 
+# Disable warnings for cleaner output
+import warnings
+warnings.filterwarnings('ignore')
+
 # === Imports ===
 import pandas as pd  # Data manipulation
 import numpy as np  # Numerical operations

@@ -1,8 +1,0 @@
-Collecting lightgbm
-  Downloading lightgbm-4.6.0-py3-none-win_amd64.whl.metadata (17 kB)
-Requirement already satisfied: numpy>=1.17.0 in C:\Users\Davis\.pyenv\pyenv-win\versions\3.11.9\Lib\site-packages (from lightgbm) (1.26.4)
-Requirement already satisfied: scipy in C:\Users\Davis\.pyenv\pyenv-win\versions\3.11.9\Lib\site-packages (from lightgbm) (1.17.1)
-Downloading lightgbm-4.6.0-py3-none-win_amd64.whl (1.5 MB)
-   ---------------------------------------- 1.5/1.5 MB 25.3 MB/s  0:00:00
-Installing collected packages: lightgbm
-Successfully installed lightgbm-4.6.0

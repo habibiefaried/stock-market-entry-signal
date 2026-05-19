@@ -28,6 +28,8 @@ import argparse  # Command-line argument parsing
 import os  # Operating system utilities
 import joblib  # Model serialization (save/load models)
 from datetime import datetime  # Date and time utilities
+import warnings  # Warning control
+warnings.filterwarnings('ignore')  # Disable warnings for cleaner output
 
 def load_and_prepare_data(csv_file):
     """

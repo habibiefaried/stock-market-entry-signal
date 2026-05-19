@@ -166,10 +166,92 @@ For machine learning models:
 
 ## Training Models
 
-After fetching the data, train prediction models using LSTM or XGBoost.
+After fetching the data, train prediction models using various algorithms.
 
-**Training Data:** Models use only **OHLCV** (Open, High, Low, Close, Volume) features.
+**Model Types:**
+- **Statistical Models** (ARIMA): Pure mathematics, no ML training, fast
+- **Machine Learning Models** (LSTM, LightGBM, XGBoost): Learn patterns from data
+
+**Training Data:** ML models use **OHLCV** features. ARIMA uses only **Close** prices.
 **Technical Indicators:** Saved for implementing trading signals/rules separately.
+
+### ARIMA Model (Statistical Forecasting - No ML)
+
+Train an ARIMA model using pure statistics:
+
+```bash
+# Auto-tune parameters (recommended)
+python train_arima.py MSFT_daily_data_20260520.csv
+
+# Manual parameters
+python train_arima.py MSFT_daily_data_20260520.csv --p 5 --d 1 --q 5 --no-auto-tune
+```
+
+**Parameters:**
+- `--p`: AR order - how many past prices to use (default: auto-tune)
+- `--d`: Differencing order - removes trend (default: auto-tune)
+- `--q`: MA order - how many past errors to use (default: auto-tune)
+- `--no-auto-tune`: Disable automatic parameter optimization
+
+**Understanding ARIMA:**
+
+**What is ARIMA?**
+- **NOT machine learning** - uses statistical formulas, not training
+- AutoRegressive Integrated Moving Average
+- Classic time series forecasting method used by economists and traders
+- Much faster than ML (seconds vs minutes)
+- More interpretable - can see exact mathematical formula
+
+**ARIMA Components (p, d, q):**
+
+1. **AR (AutoRegressive) - p parameter:**
+   - Uses past prices to predict future
+   - p=5 means: use last 5 days to predict tomorrow
+   - Like linear regression with lag features
+   - Formula: price_t = c + φ₁×price_{t-1} + φ₂×price_{t-2} + ...
+
+2. **I (Integrated) - d parameter:**
+   - Makes data "stationary" (removes trends)
+   - d=0: No change (data already flat)
+   - d=1: Use daily changes instead of prices (removes trend)
+   - d=2: Use change-of-change (removes acceleration)
+   - Stock prices trend up/down → need d≥1
+
+3. **MA (Moving Average) - q parameter:**
+   - Uses past forecast ERRORS to improve predictions
+   - q=5 means: use last 5 prediction errors
+   - Helps smooth out random shocks/news events
+   - Formula: price_t = c + ε_t + θ₁×ε_{t-1} + θ₂×ε_{t-2} + ...
+
+**Example: ARIMA(5,1,5)**
+- Use last 5 prices (AR=5)
+- Take first difference to remove trend (I=1)
+- Use last 5 errors (MA=5)
+
+**Stationarity Explained:**
+- **Stationary**: Mean and variance constant over time (no trend, flat)
+- **Non-stationary**: Has trend going up/down or changing volatility
+- Stock prices are NON-stationary (they trend)
+- ARIMA's "I" (differencing) converts to stationary
+- Example: MSFT $85→$90→$95 (trending) → Daily change: +$5→+$5 (flat)
+
+**Auto-tuning:**
+- Tests many (p,d,q) combinations
+- Picks best using AIC (Akaike Information Criterion)
+- AIC balances fit vs complexity (lower = better)
+- Prevents overfitting
+
+**ARIMA vs Machine Learning:**
+- **ARIMA**: Statistical formulas, only uses Close prices, very fast, interpretable
+- **ML (LSTM/XGBoost)**: Learns patterns, uses multiple features (OHLCV), slower, black box
+- **When to use ARIMA**: Quick forecasts, baseline comparison, understand trend components
+- **When to use ML**: Have lots of data, want to use multiple features, complex patterns
+
+**Outputs:**
+- `arima_model.pkl`: Fitted ARIMA model
+- `arima_model_info.txt`: Model performance metrics
+- `arima_predictions.png`: Actual vs predicted prices plot
+- `arima_diagnostics.png`: Residual analysis (forecast errors should be random)
 
 ### LSTM Model (Deep Learning)
 
@@ -426,19 +508,25 @@ All models provide:
 # Step 1: Fetch 36 months of MSFT data (default)
 python fetch_stock_data.py MSFT
 
-# Step 2: Train LSTM model (deep learning)
+# Step 2: Train ARIMA model (statistical - fastest, good baseline)
+python train_arima.py MSFT_daily_data_20260520.csv
+
+# Step 3: Train LSTM model (deep learning - captures sequences)
 python train_lstm.py MSFT_daily_data_20260520.csv
 
-# Step 3: Train LightGBM model (recommended - fastest, often most accurate)
+# Step 4: Train LightGBM model (recommended - fast, accurate)
 python train_lightgbm.py MSFT_daily_data_20260520.csv
 
-# Step 4: Train XGBoost model (alternative gradient boosting)
+# Step 5: Train XGBoost model (alternative gradient boosting)
 python train_xgboost.py MSFT_daily_data_20260520.csv
 
-# Step 5: Compare results and choose the best model
+# Step 6: Compare all models
 # - Compare test MAE (lower is better)
 # - Compare direction accuracy (higher is better)
 # - Check predictions.png for visual comparison
+# - ARIMA: fastest, interpretable
+# - LSTM: best for long sequences
+# - LightGBM/XGBoost: best for tabular data
 ```
 
 ## Notes
@@ -447,9 +535,11 @@ python train_xgboost.py MSFT_daily_data_20260520.csv
 - Some indicators (like MA_200) may have null values if insufficient historical data
 - Cryptocurrency markets trade 24/7, so they may have more data points than stocks
 - Data is fetched from Yahoo Finance via yfinance library
+- ARIMA is pure statistics (no ML), fastest, most interpretable, only uses Close prices
 - LSTM models are better for capturing long-term dependencies in time series
 - LightGBM is recommended for tabular data (often faster and more accurate than XGBoost)
 - XGBoost and LightGBM are easier to interpret (feature importance plots)
 - All models use 30 months for training and 6 months for testing
 - LSTM simplified to 2 layers (64→32 units) with 30% dropout for better performance on financial data
 - LightGBM uses leaf-wise tree growth (2-4x faster than XGBoost's level-wise)
+- ARIMA auto-tunes (p,d,q) parameters using AIC criterion
