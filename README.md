@@ -57,20 +57,20 @@ python fetch_stock_data.py <TICKER> --months <NUMBER_OF_MONTHS>
 ### Parameters
 
 - `ticker` (required): The ticker symbol for the asset you want to fetch
-- `--months` (optional): Number of months of historical data (default: 12)
+- `--months` (optional): Number of months of historical data (default: 36)
 
 ## Examples
 
 ### Stock Market Data
 
 ```bash
-# Microsoft (12 months - default)
+# Microsoft (36 months - default)
 python fetch_stock_data.py MSFT
 
-# Microsoft (6 months)
-python fetch_stock_data.py MSFT --months 6
+# Microsoft (12 months)
+python fetch_stock_data.py MSFT --months 12
 
-# Apple (12 months)
+# Apple (36 months)
 python fetch_stock_data.py AAPL
 
 # Google (3 months)
@@ -160,9 +160,9 @@ Models only use OHLCV data. Technical indicators are for implementing separate t
 ## Data Split for Training
 
 For machine learning models:
-- **12 months of data**: ~252 trading days
-  - Training: ~210 days (10 months)
-  - Testing: ~42 days (2 months)
+- **36 months of data**: ~756 trading days
+  - Training: ~630 days (30 months)
+  - Testing: ~126 days (6 months)
 
 ## Training Models
 
@@ -212,15 +212,15 @@ python train_lstm.py MSFT_daily_data_20260519.csv --lookback 60 --epochs 100 --b
    - **Larger (e.g., 64-128)**: Faster training, more stable gradients, needs more memory
    - **Recommended**: 16-32 for small datasets, 32-64 for larger datasets
 
-**LSTM Model Architecture:**
+**LSTM Model Architecture (Simplified):**
 
-The model uses 3 LSTM layers with decreasing units:
-- **Layer 1**: 128 LSTM units (captures complex patterns)
-- **Layer 2**: 64 LSTM units (intermediate patterns)
-- **Layer 3**: 32 LSTM units (refined patterns)
-- **Dropout**: 20% after each LSTM layer (prevents overfitting)
-- **Dense Layer**: 16 units with ReLU activation
+The model uses 2 LSTM layers with decreasing units:
+- **Layer 1**: 64 LSTM units (captures patterns)
+- **Layer 2**: 32 LSTM units (refined patterns)
+- **Dropout**: 30% after each LSTM layer (prevents overfitting)
 - **Output Layer**: 1 unit (predicted closing price)
+- **Total Parameters**: ~30K (75% reduction from previous 130K)
+- **Benefits**: Faster training, less overfitting, better for financial data
 
 **How LSTM Works for Stock Prediction:**
 
@@ -334,7 +334,7 @@ Both models provide:
 ### Example Training Workflow
 
 ```bash
-# Step 1: Fetch 12 months of MSFT data (default)
+# Step 1: Fetch 36 months of MSFT data (default)
 python fetch_stock_data.py MSFT
 
 # Step 2: Train LSTM model
@@ -354,4 +354,5 @@ python train_xgboost.py MSFT_daily_data_20260520.csv
 - Data is fetched from Yahoo Finance via yfinance library
 - LSTM models are better for capturing long-term dependencies in time series
 - XGBoost models are faster to train and easier to interpret (feature importance)
-- Both models use 10 months for training and 2 months for testing
+- Both models use 30 months for training and 6 months for testing
+- LSTM simplified to 2 layers (64→32 units) with 30% dropout for better performance on financial data

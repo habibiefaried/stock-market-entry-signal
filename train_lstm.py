@@ -161,68 +161,58 @@ def split_train_test(df, feature_cols, train_ratio=5/6):
 
 def build_lstm_model(input_shape):
     """
-    Build LSTM neural network architecture
+    Build LSTM neural network architecture (SIMPLIFIED)
 
     Architecture:
-    Input → LSTM(128) → Dropout → LSTM(64) → Dropout → LSTM(32) → Dropout → Dense(16) → Dense(1)
+    Input → LSTM(64) → Dropout(0.3) → LSTM(32) → Dropout(0.3) → Dense(1)
 
     Args:
-        input_shape (tuple): (lookback, num_features) e.g., (60, 17)
+        input_shape (tuple): (lookback, num_features) e.g., (60, 5)
 
     Returns:
         model: Compiled Keras model
 
     Layer Explanation:
-    1. LSTM(128, return_sequences=True): First LSTM layer with 128 memory units
-       - Processes the entire sequence
+    1. LSTM(64, return_sequences=True): First LSTM layer with 64 memory units
+       - Reduced from 128 to prevent overfitting on financial data
        - return_sequences=True: Pass full sequence to next LSTM layer
        - Learns high-level patterns (trends, cycles, volatility patterns)
 
-    2. Dropout(0.2): Randomly drops 20% of connections during training
+    2. Dropout(0.3): Randomly drops 30% of connections during training
+       - Increased from 0.2 for stronger regularization
        - Prevents overfitting (memorizing noise instead of learning patterns)
        - Forces network to learn robust features
 
-    3. LSTM(64, return_sequences=True): Second LSTM layer (64 units)
-       - Refines patterns from first layer
-       - Still passes sequences forward
-
-    4. LSTM(32, return_sequences=False): Third LSTM layer (32 units)
-       - Final sequence processing
+    3. LSTM(32, return_sequences=False): Second LSTM layer (32 units)
+       - Half the units of first layer (funnel architecture)
        - return_sequences=False: Only output final state (not full sequence)
        - Condenses 60 days of info into single representation
 
-    5. Dense(16, activation='relu'): Fully connected layer
-       - ReLU activation: f(x) = max(0, x)
-       - Further processes the LSTM output
-       - Learns final non-linear relationships
+    4. Dropout(0.3): Another dropout layer
+       - Extra regularization for financial data
 
-    6. Dense(1): Output layer
+    5. Dense(1): Output layer
        - Single neuron = single prediction (tomorrow's price)
        - No activation = linear output (can be any price value)
+       - Direct connection from LSTM to output (no intermediate Dense layer)
 
-    Why this architecture?
-    - 3 LSTM layers: Deep enough to learn complex patterns, not too deep to overtrain
-    - Decreasing units (128→64→32): Funnel from broad patterns to specific prediction
-    - Dropout: Prevents overfitting on limited training data
-    - Dense layers: Final processing of LSTM features
+    Why this simpler architecture?
+    - 2 LSTM layers instead of 3: Prevents overfitting on noisy financial data
+    - Fewer units (64→32 vs 128→64→32): ~75% parameter reduction (~30K vs ~130K)
+    - Higher dropout (30% vs 20%): Stronger regularization
+    - No intermediate Dense layer: Simpler, more direct path to prediction
+    - Better for limited data: Trains faster, generalizes better
     """
     model = Sequential([
         # Layer 1: First LSTM layer
-        LSTM(128, return_sequences=True, input_shape=input_shape),
-        Dropout(0.2),  # Drop 20% of connections to prevent overfitting
+        LSTM(64, return_sequences=True, input_shape=input_shape),
+        Dropout(0.3),  # Drop 30% of connections to prevent overfitting
 
-        # Layer 2: Second LSTM layer
-        LSTM(64, return_sequences=True),
-        Dropout(0.2),
-
-        # Layer 3: Third LSTM layer (final sequence processing)
+        # Layer 2: Second LSTM layer (final sequence processing)
         LSTM(32, return_sequences=False),  # Don't pass sequences anymore
-        Dropout(0.2),
+        Dropout(0.3),
 
-        # Layer 4: Dense layer for final processing
-        Dense(16, activation='relu'),  # ReLU: Rectified Linear Unit
-
-        # Layer 5: Output layer (prediction)
+        # Layer 3: Output layer (prediction)
         Dense(1)  # Single output = predicted price
     ])
 
