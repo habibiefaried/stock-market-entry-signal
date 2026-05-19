@@ -5,6 +5,9 @@ This script checks if GPU/CUDA is available for TensorFlow and XGBoost.
 Run this before training to verify your GPU setup.
 """
 
+import os
+os.environ['KERAS_BACKEND'] = 'torch'  # Set PyTorch backend BEFORE importing keras
+
 import tensorflow as tf
 import xgboost as xgb
 import sys
@@ -18,19 +21,37 @@ print("="*60)
 print(f"\nPython version: {sys.version}")
 print(f"Python executable: {sys.executable}")
 
-# TensorFlow GPU check
-print(f"\n{'TensorFlow GPU Check':-^60}")
+# PyTorch GPU check
+print(f"\n{'PyTorch GPU Check':-^60}")
+import torch
+print(f"PyTorch version: {torch.__version__}")
+cuda_available = torch.cuda.is_available()
+print(f"CUDA available: {cuda_available}")
+if cuda_available:
+    print(f"  GPU: {torch.cuda.get_device_name(0)}")
+    print(f"  CUDA version: {torch.version.cuda}")
+    print("  [OK] PyTorch can use GPU acceleration")
+else:
+    print("  [!] CUDA not available for PyTorch")
+
+# Keras GPU check (with PyTorch backend)
+print(f"\n{'Keras + PyTorch Backend Check':-^60}")
+import keras
+print(f"Keras version: {keras.__version__}")
+print(f"Keras backend: {keras.backend.backend()}")
+if keras.backend.backend() == 'torch' and cuda_available:
+    print("  [OK] Keras using PyTorch backend with GPU!")
+else:
+    print("  [!] Keras not using GPU")
+
+# TensorFlow check (for reference)
+print(f"\n{'TensorFlow Check (Reference)':-^60}")
 print(f"TensorFlow version: {tf.__version__}")
 gpus = tf.config.list_physical_devices('GPU')
-print(f"GPU devices detected by TensorFlow: {len(gpus)}")
+print(f"TensorFlow GPU devices: {len(gpus)}")
 if gpus:
     for i, gpu in enumerate(gpus):
         print(f"  GPU {i}: {gpu.name}")
-        try:
-            details = tf.config.experimental.get_device_details(gpu)
-            print(f"    Details: {details}")
-        except:
-            pass
 else:
     print("  [!] No GPU detected by TensorFlow")
     print("  Note: TensorFlow 2.11+ does not support native GPU on Windows")
@@ -74,24 +95,41 @@ print("\n" + "="*60)
 print("Summary")
 print("="*60)
 
-tf_gpu = len(gpus) > 0
+pytorch_gpu = torch.cuda.is_available()
+keras_pytorch_gpu = keras.backend.backend() == 'torch' and pytorch_gpu
 xgb_cuda = False
 try:
     xgb_cuda = xgb.build_info().get('USE_CUDA', False)
 except:
     pass
 
-print(f"TensorFlow GPU available: {'YES' if tf_gpu else 'NO (CPU only)'}")
+print(f"PyTorch GPU available: {'YES' if pytorch_gpu else 'NO (CPU only)'}")
+print(f"Keras + PyTorch GPU available: {'YES' if keras_pytorch_gpu else 'NO (CPU only)'}")
 print(f"XGBoost CUDA available: {'YES' if xgb_cuda else 'NO (CPU only)'}")
 
 print("\nTraining will use:")
-print(f"  - LSTM (TensorFlow): {'GPU' if tf_gpu else 'CPU'}")
+print(f"  - LSTM (Keras + PyTorch): {'GPU' if keras_pytorch_gpu else 'CPU'}")
 print(f"  - XGBoost: {'GPU' if xgb_cuda else 'CPU'}")
 
-if not tf_gpu and not xgb_cuda:
-    print("\n[INFO] CPU training is perfectly fine for 6 months of data!")
+if keras_pytorch_gpu and xgb_cuda:
+    print("\n[SUCCESS] Both models will use GPU acceleration!")
+    print("Expected training times:")
+    print("  - LSTM: ~1-2 minutes (GPU)")
+    print("  - XGBoost: ~30-60 seconds (GPU)")
+elif not keras_pytorch_gpu and not xgb_cuda:
+    print("\n[INFO] Both models will use CPU")
     print("Expected training times:")
     print("  - LSTM: ~5-10 minutes")
     print("  - XGBoost: ~1-2 minutes")
+else:
+    print("\n[INFO] Partial GPU acceleration available")
+    if keras_pytorch_gpu:
+        print("  - LSTM: ~1-2 minutes (GPU)")
+    else:
+        print("  - LSTM: ~5-10 minutes (CPU)")
+    if xgb_cuda:
+        print("  - XGBoost: ~30-60 seconds (GPU)")
+    else:
+        print("  - XGBoost: ~1-2 minutes (CPU)")
 
 print("="*60)

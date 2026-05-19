@@ -29,82 +29,22 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-**Step 3: Already done! TensorFlow and Keras are installed**
-
-TensorFlow 2.21 is installed and will use **CPU** for training.
-
-**Note:** TensorFlow 2.11+ does not support GPU on native Windows without WSL2. CPU training works perfectly fine:
-- LSTM: ~5-10 minutes for 6 months of data
-- XGBoost: ~1-2 minutes for 6 months of data
-
 ### Check GPU/CUDA Availability
 
-To check if CUDA/GPU is available for training:
+Run the GPU test script to verify your setup:
 
-```bash
-# Check TensorFlow GPU detection
-python -c "import tensorflow as tf; print('TensorFlow version:', tf.__version__); gpus = tf.config.list_physical_devices('GPU'); print('GPU devices:', gpus)"
-
-# Check if CUDA is available on system
-nvidia-smi
-
-# Check XGBoost GPU support
-python -c "import xgboost as xgb; print('XGBoost version:', xgb.__version__); print('XGBoost built with CUDA:', xgb.build_info()['USE_CUDA'])"
-```
-
-**Test script to verify all GPU components:**
-
-```python
-# test_gpu.py
-import tensorflow as tf
-import xgboost as xgb
-import sys
-
-print("="*60)
-print("GPU/CUDA Availability Check")
-print("="*60)
-
-# Python version
-print(f"\nPython version: {sys.version}")
-
-# TensorFlow GPU check
-print(f"\nTensorFlow version: {tf.__version__}")
-gpus = tf.config.list_physical_devices('GPU')
-print(f"TensorFlow GPU devices: {len(gpus)}")
-if gpus:
-    for i, gpu in enumerate(gpus):
-        print(f"  GPU {i}: {gpu.name}")
-else:
-    print("  No GPU detected by TensorFlow")
-
-# XGBoost GPU check
-print(f"\nXGBoost version: {xgb.__version__}")
-try:
-    build_info = xgb.build_info()
-    use_cuda = build_info.get('USE_CUDA', False)
-    print(f"XGBoost CUDA support: {use_cuda}")
-except:
-    print("XGBoost CUDA support: Unknown")
-
-print("\n" + "="*60)
-print("Note: On Windows, TensorFlow 2.11+ does not support native GPU.")
-print("XGBoost may still use GPU if CUDA toolkit is installed.")
-print("="*60)
-```
-
-Run the test script:
 ```bash
 python test_gpu.py
 ```
 
-### Training Time Comparison
+**What it checks:**
+- PyTorch GPU support (LSTM uses Keras with PyTorch backend)
+- XGBoost CUDA support
+- System GPU via nvidia-smi
 
-| Model   | Dataset Size | CPU Time | GPU Time (DirectML) |
-|---------|-------------|----------|---------------------|
-| LSTM    | 6 months    | ~5-10 min | ~1-2 min           |
-| XGBoost | 6 months    | ~1-2 min  | ~30-60 sec         |
-
-**Note:** GPU support requires Python 3.11 and TensorFlow-DirectML. XGBoost auto-detects GPU if CUDA is available.
+**Expected GPU Training Times (6 months data):**
+- LSTM: ~1-2 minutes
+- XGBoost: ~30-60 seconds
 
 ## Usage
 
@@ -117,21 +57,21 @@ python fetch_stock_data.py <TICKER> --months <NUMBER_OF_MONTHS>
 ### Parameters
 
 - `ticker` (required): The ticker symbol for the asset you want to fetch
-- `--months` (optional): Number of months of historical data (default: 6)
+- `--months` (optional): Number of months of historical data (default: 12)
 
 ## Examples
 
 ### Stock Market Data
 
 ```bash
-# Microsoft (6 months - default)
+# Microsoft (12 months - default)
 python fetch_stock_data.py MSFT
 
-# Microsoft (12 months)
-python fetch_stock_data.py MSFT --months 12
+# Microsoft (6 months)
+python fetch_stock_data.py MSFT --months 6
 
-# Apple (6 months)
-python fetch_stock_data.py AAPL --months 6
+# Apple (12 months)
+python fetch_stock_data.py AAPL
 
 # Google (3 months)
 python fetch_stock_data.py GOOGL --months 3
@@ -199,25 +139,20 @@ The script generates a CSV file named `{TICKER}_daily_data_{DATE}.csv` containin
 - **Close**: Closing price
 - **Volume**: Trading volume
 
-### Technical Indicators
+### Technical Indicators (For Trading Signals)
+
+**Note:** These indicators are saved in the CSV but NOT used for model training.
+Models only use OHLCV data. Technical indicators are for implementing separate trading rules/signals.
 
 #### Moving Averages (MA)
-- **MA_5**: 5-day moving average
-- **MA_10**: 10-day moving average
-- **MA_20**: 20-day moving average
-- **MA_50**: 50-day moving average
-- **MA_200**: 200-day moving average (requires sufficient data)
+- **MA_5, MA_10, MA_20, MA_50, MA_200**: Moving averages for trend analysis
 
 #### Momentum Indicators
-- **RSI_14**: 14-period Relative Strength Index (overbought/oversold indicator)
-- **MACD**: Moving Average Convergence Divergence line
-- **MACD_Signal**: MACD signal line
-- **MACD_Hist**: MACD histogram (MACD - Signal)
+- **RSI_14**: Relative Strength Index (overbought/oversold)
+- **MACD, MACD_Signal, MACD_Hist**: MACD indicators
 
 #### Volatility Indicators
-- **BB_Upper**: Upper Bollinger Band (2 std dev above 20-day MA)
-- **BB_Middle**: Middle Bollinger Band (20-day MA)
-- **BB_Lower**: Lower Bollinger Band (2 std dev below 20-day MA)
+- **BB_Upper, BB_Middle, BB_Lower**: Bollinger Bands
 
 #### Volume Indicators
 - **Volume_MA_20**: 20-day volume moving average
@@ -225,13 +160,16 @@ The script generates a CSV file named `{TICKER}_daily_data_{DATE}.csv` containin
 ## Data Split for Training
 
 For machine learning models:
-- **6 months of data**: ~123 trading days
-  - Training: ~102 days (5 months)
-  - Testing: ~21 days (1 month)
+- **12 months of data**: ~252 trading days
+  - Training: ~210 days (10 months)
+  - Testing: ~42 days (2 months)
 
 ## Training Models
 
-After fetching the data, you can train prediction models using either LSTM or XGBoost.
+After fetching the data, train prediction models using LSTM or XGBoost.
+
+**Training Data:** Models use only **OHLCV** (Open, High, Low, Close, Volume) features.
+**Technical Indicators:** Saved for implementing trading signals/rules separately.
 
 ### LSTM Model (Deep Learning)
 
@@ -396,14 +334,14 @@ Both models provide:
 ### Example Training Workflow
 
 ```bash
-# Step 1: Fetch 6 months of MSFT data
-python fetch_stock_data.py MSFT --months 6
+# Step 1: Fetch 12 months of MSFT data (default)
+python fetch_stock_data.py MSFT
 
 # Step 2: Train LSTM model
-python train_lstm.py MSFT_daily_data_20260519.csv
+python train_lstm.py MSFT_daily_data_20260520.csv
 
 # Step 3: Train XGBoost model
-python train_xgboost.py MSFT_daily_data_20260519.csv
+python train_xgboost.py MSFT_daily_data_20260520.csv
 
 # Step 4: Compare results and choose the best model
 ```
@@ -416,4 +354,4 @@ python train_xgboost.py MSFT_daily_data_20260519.csv
 - Data is fetched from Yahoo Finance via yfinance library
 - LSTM models are better for capturing long-term dependencies in time series
 - XGBoost models are faster to train and easier to interpret (feature importance)
-- Both models use 5 months for training and 1 month for testing
+- Both models use 10 months for training and 2 months for testing

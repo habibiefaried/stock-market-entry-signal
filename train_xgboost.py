@@ -1,73 +1,161 @@
-import pandas as pd
-import numpy as np
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_absolute_error, mean_squared_error, accuracy_score, precision_score, recall_score, f1_score
-import xgboost as xgb
-import matplotlib.pyplot as plt
-import argparse
-import os
-import joblib
-from datetime import datetime
+"""
+XGBoost Stock Price Prediction Model
+
+This script trains an XGBoost (Extreme Gradient Boosting) model to predict stock prices.
+XGBoost is a tree-based ensemble method that builds multiple decision trees sequentially,
+where each new tree corrects the errors of previous trees.
+
+Key Concepts:
+- Gradient Boosting: Trees are added one at a time, each learning from previous mistakes
+- Regularization: Prevents overfitting through max_depth, subsample, and colsample_bytree
+- Feature Engineering: Creates lag features and technical indicators for better predictions
+"""
+
+import pandas as pd  # Data manipulation and analysis
+import numpy as np  # Numerical computations
+from sklearn.preprocessing import StandardScaler  # Feature scaling (normalize data)
+from sklearn.metrics import mean_absolute_error, mean_squared_error, accuracy_score, precision_score, recall_score, f1_score  # Evaluation metrics
+import xgboost as xgb  # XGBoost library for gradient boosting
+import matplotlib.pyplot as plt  # Plotting and visualization
+import argparse  # Command-line argument parsing
+import os  # Operating system utilities
+import joblib  # Model serialization (save/load models)
+from datetime import datetime  # Date and time utilities
 
 def load_and_prepare_data(csv_file):
-    """Load CSV data and prepare for XGBoost"""
+    """
+    Load CSV data and prepare basic features for XGBoost
+
+    Args:
+        csv_file (str): Path to CSV file containing stock data
+
+    Returns:
+        df (DataFrame): Cleaned dataframe with stock data
+        feature_cols (list): List of feature column names to use
+
+    What this does:
+    - Reads the CSV file with stock data (OHLCV + technical indicators)
+    - Removes any rows with missing values (NaN) that would break training
+    - Selects relevant features for the model
+    """
     print(f"Loading data from {csv_file}...")
     df = pd.read_csv(csv_file)
 
-    # Drop rows with NaN values
-    df = df.dropna()
+    # Select ONLY OHLCV features for training
+    # Technical indicators (MA, RSI, MACD, etc.) are kept in CSV for trading signals,
+    # but NOT used for model training
+    feature_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
 
-    print(f"Total records after removing NaN: {len(df)}")
+    # Verify all required columns exist
+    missing_cols = [col for col in feature_cols if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
 
-    # Select features for training
-    feature_cols = ['Open', 'High', 'Low', 'Close', 'Volume',
-                    'MA_5', 'MA_10', 'MA_20', 'MA_50',
-                    'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Hist',
-                    'BB_Upper', 'BB_Middle', 'BB_Lower', 'Volume_MA_20']
-
-    # Keep only columns that exist
-    feature_cols = [col for col in feature_cols if col in df.columns]
+    print(f"Using features: {feature_cols}")
+    print(f"Total records: {len(df)} (no NaN removal needed for OHLCV)")
 
     return df, feature_cols
 
 def create_lag_features(df, feature_cols, lags=[1, 2, 3, 5, 10]):
-    """Create lag features for time series"""
-    df_lagged = df.copy()
+    """
+    Create lag features for time series prediction
+
+    XGBoost doesn't naturally understand time sequences like LSTM does.
+    To give it temporal context, we create "lag features" - past values
+    that help the model understand patterns over time.
+
+    Args:
+        df (DataFrame): Input dataframe with stock data
+        feature_cols (list): Original feature columns (OHLCV)
+        lags (list): How many days back to look [1, 2, 3, 5, 10]
+
+    Returns:
+        df_lagged (DataFrame): Dataframe with lag features added
+        all_features (list): Complete list of feature names
+
+    Example of lag features:
+    If today's Close = $100, then:
+    - Close_lag_1 = yesterday's close ($98)
+    - Close_lag_2 = 2 days ago close ($97)
+    This helps model learn: "When price was $97 → $98 → $100, what happens next?"
+    """
+    # IMPORTANT: Only keep Date + feature_cols to avoid NaN from unused technical indicators
+    keep_cols = ['Date'] + feature_cols
+    df_lagged = df[keep_cols].copy()
+    print(f"Using columns for lag features: {df_lagged.columns.tolist()}")
 
     # Create lag features for Close price
+    # shift(1) moves data down by 1 row, so current row gets previous day's value
     for lag in lags:
         df_lagged[f'Close_lag_{lag}'] = df_lagged['Close'].shift(lag)
+        # Example: Close_lag_1 means "closing price 1 day ago"
 
     # Create lag features for Volume
+    # High volume can indicate strong moves, so past volume matters
     for lag in lags:
         df_lagged[f'Volume_lag_{lag}'] = df_lagged['Volume'].shift(lag)
 
-    # Price change features
+    # Price change features (percentage change)
+    # pct_change(1) = (today - yesterday) / yesterday
+    # This captures momentum: is price accelerating up or down?
     df_lagged['Price_change_1d'] = df_lagged['Close'].pct_change(1)
     df_lagged['Price_change_5d'] = df_lagged['Close'].pct_change(5)
     df_lagged['Price_change_10d'] = df_lagged['Close'].pct_change(10)
 
-    # Volatility features
+    # Volatility features (standard deviation of price)
+    # High volatility = risky, unpredictable price swings
+    # Low volatility = stable, predictable movement
     df_lagged['Volatility_5d'] = df_lagged['Close'].rolling(window=5).std()
     df_lagged['Volatility_10d'] = df_lagged['Close'].rolling(window=10).std()
 
     # Target: Next day's closing price
+    # shift(-1) moves data UP by 1 row, so current row gets NEXT day's value
+    # This is what we're trying to predict!
     df_lagged['Target'] = df_lagged['Close'].shift(-1)
 
-    # Drop rows with NaN (from shifting)
+    # Drop rows with NaN (created by shift operations)
+    # - First few rows: no data for lag features (Close_lag_10 needs 10 prior days)
+    # - Last row: no target value (can't predict future beyond our data)
     df_lagged = df_lagged.dropna()
 
-    # Get all feature column names (excluding Date and Target)
+    print(f"Records after creating lag features: {len(df_lagged)}")
+
+    # Get all feature column names (everything except Date and Target)
+    # These are our input variables (X) for training
     all_features = [col for col in df_lagged.columns if col not in ['Date', 'Target']]
 
     return df_lagged, all_features
 
 def split_train_test(df, train_ratio=5/6):
-    """Split data into train and test sets (5 months train, 1 month test)"""
+    """
+    Split data into training and testing sets
+
+    IMPORTANT: For time series, we CANNOT use random split!
+    We must preserve chronological order:
+    - Training data: Past (5 months)
+    - Test data: Future (1 month)
+
+    This simulates real-world trading: train on historical data,
+    then test on future unseen data.
+
+    Args:
+        df (DataFrame): Input dataframe
+        train_ratio (float): Proportion for training (5/6 = 83.3%)
+
+    Returns:
+        train_df: Training data (first 5 months)
+        test_df: Test data (last 1 month)
+
+    Why 5/6 split?
+    - 6 months total data
+    - 5 months (83%) = training (model learns patterns)
+    - 1 month (17%) = testing (evaluate real performance)
+    """
     split_idx = int(len(df) * train_ratio)
 
-    train_df = df[:split_idx]
-    test_df = df[split_idx:]
+    # CHRONOLOGICAL split - do NOT shuffle!
+    train_df = df[:split_idx]  # First 5 months
+    test_df = df[split_idx:]   # Last 1 month
 
     print(f"\nData split:")
     print(f"Training set: {len(train_df)} records ({train_df['Date'].min()} to {train_df['Date'].max()})")
@@ -76,11 +164,38 @@ def split_train_test(df, train_ratio=5/6):
     return train_df, test_df
 
 def calculate_direction_metrics(y_true, y_pred):
-    """Calculate accuracy, precision, recall for price direction (up/down)"""
-    # Convert price predictions to direction (1 = up, 0 = down)
-    y_true_direction = (np.diff(y_true) > 0).astype(int)
+    """
+    Calculate classification metrics for price direction
+
+    While our model predicts exact prices (regression), traders care about
+    DIRECTION: will price go up or down tomorrow?
+
+    This function converts price predictions to up/down and calculates:
+    - Accuracy: % of correct direction predictions
+    - Precision: Of predicted "ups", how many were actually up?
+    - Recall: Of actual "ups", how many did we predict?
+    - F1-Score: Balance of precision and recall
+
+    Args:
+        y_true (array): Actual prices
+        y_pred (array): Predicted prices
+
+    Returns:
+        accuracy, precision, recall, f1 (floats): Classification metrics
+
+    Example:
+    Day 1: $100 → Day 2: $102 (UP) ✓ predicted correctly = 1
+    Day 2: $102 → Day 3: $101 (DOWN) ✗ predicted UP = 0
+    Accuracy = 1/2 = 50%
+    """
+    # Convert consecutive prices to direction changes
+    # np.diff([100, 102, 101]) = [2, -1]
+    # > 0 converts to True/False, .astype(int) converts to 1/0
+    y_true_direction = (np.diff(y_true) > 0).astype(int)  # 1=up, 0=down
     y_pred_direction = (np.diff(y_pred) > 0).astype(int)
 
+    # Classification metrics
+    # These tell us how good we are at predicting "will it go up or down?"
     accuracy = accuracy_score(y_true_direction, y_pred_direction)
     precision = precision_score(y_true_direction, y_pred_direction, zero_division=0)
     recall = recall_score(y_true_direction, y_pred_direction, zero_division=0)
@@ -114,28 +229,43 @@ def train_xgboost_model(csv_file, n_estimators=1000, learning_rate=0.01, max_dep
     print(f"X_train: {X_train.shape}")
     print(f"X_test: {X_test.shape}")
 
-    # Scale features (optional for tree-based models, but can help)
+    # Scale features - StandardScaler normalizes each feature to mean=0, std=1
+    # Why? Features like Volume (millions) and RSI (0-100) have very different ranges
+    # Scaling puts them on the same scale so the model treats them equally
+    # Note: Not strictly required for tree-based models, but can improve performance
     scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
+    X_train_scaled = scaler.fit_transform(X_train)  # Learn mean/std from training data
+    X_test_scaled = scaler.transform(X_test)  # Apply same scaling to test data
 
     # Build XGBoost model
     print("\nBuilding XGBoost model...")
 
     # Try GPU first, fallback to CPU if not available
+    # GPU can speed up training 2-4x for large datasets
     try:
         model = xgb.XGBRegressor(
-            n_estimators=n_estimators,
-            learning_rate=learning_rate,
-            max_depth=max_depth,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            tree_method='hist',
-            device='cuda'
+            # === Core Parameters ===
+            n_estimators=n_estimators,  # Number of trees (default: 1000)
+                                        # More trees = more learning, but slower training
+            learning_rate=learning_rate,  # How much each tree contributes (default: 0.01)
+                                          # Lower = more trees needed, but better generalization
+            max_depth=max_depth,  # Maximum depth of each tree (default: 7)
+                                  # Deeper = more complex patterns, but risk overfitting
+
+            # === Regularization Parameters (prevent overfitting) ===
+            subsample=0.8,  # Use 80% of data for each tree (random sampling)
+                            # Adds randomness → reduces overfitting
+            colsample_bytree=0.8,  # Use 80% of features for each tree
+                                   # Prevents model from relying too heavily on any single feature
+
+            # === Other Parameters ===
+            random_state=42,  # Seed for reproducibility (same results every run)
+            tree_method='hist',  # Histogram-based algorithm (faster than exact)
+            device='cuda'  # Use GPU for training (IMPORTANT: This enables GPU!)
         )
         print("Using GPU acceleration (CUDA)")
     except Exception as e:
+        # If GPU fails (no CUDA, drivers missing, etc.), fall back to CPU
         print(f"GPU not available, using CPU: {e}")
         model = xgb.XGBRegressor(
             n_estimators=n_estimators,
@@ -145,14 +275,18 @@ def train_xgboost_model(csv_file, n_estimators=1000, learning_rate=0.01, max_dep
             colsample_bytree=0.8,
             random_state=42,
             tree_method='hist'
+            # No device='cuda' - will use CPU
         )
 
-    # Train model with early stopping
+    # Train model
+    # XGBoost builds trees sequentially: Tree1 → Tree2 → Tree3 → ...
+    # Each new tree learns to correct the errors of all previous trees
     print("\nTraining XGBoost model...")
     model.fit(
-        X_train_scaled, y_train,
-        eval_set=[(X_train_scaled, y_train), (X_test_scaled, y_test)],
-        verbose=50
+        X_train_scaled, y_train,  # Training data (features and targets)
+        eval_set=[(X_train_scaled, y_train), (X_test_scaled, y_test)],  # Track performance on both sets
+        verbose=50  # Print progress every 50 trees
+        # XGBoost tracks validation loss and can early-stop if performance stops improving
     )
 
     # Make predictions
