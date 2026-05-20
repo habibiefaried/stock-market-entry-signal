@@ -226,3 +226,6 @@ __marimo__/
 *.keras
 *_model_info.txt
 *_features.txt
+*.html
+*.bak
+train_arima.py

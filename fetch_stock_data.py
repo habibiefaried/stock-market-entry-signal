@@ -63,7 +63,7 @@ Examples:
     )
 
     parser.add_argument('ticker', type=str, help='Ticker symbol (e.g., MSFT, BTC-USD, ETH-USD)')
-    parser.add_argument('--months', type=int, default=36, help='Number of months of historical data (default: 36)')
+    parser.add_argument('--months', type=int, default=48, help='Number of months of historical data (default: 48 = 4 years)')
 
     args = parser.parse_args()
 

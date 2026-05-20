@@ -16,13 +16,19 @@ import numpy as np  # Numerical computations
 from sklearn.preprocessing import StandardScaler  # Feature scaling (normalize data)
 from sklearn.metrics import mean_absolute_error, mean_squared_error, accuracy_score, precision_score, recall_score, f1_score  # Evaluation metrics
 import xgboost as xgb  # XGBoost library for gradient boosting
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt  # Plotting and visualization
 import argparse  # Command-line argument parsing
 import os  # Operating system utilities
 import joblib  # Model serialization (save/load models)
 from datetime import datetime  # Date and time utilities
 import warnings  # Warning control
+import logging  # Suppress matplotlib logging
 warnings.filterwarnings('ignore')  # Disable warnings for cleaner output
+logging.getLogger('matplotlib').setLevel(logging.ERROR)  # Suppress matplotlib warnings
+logging.getLogger('PIL').setLevel(logging.ERROR)  # Suppress PIL warnings
+logging.getLogger('xgboost').setLevel(logging.ERROR)  # Suppress XGBoost warnings
 
 def load_and_prepare_data(csv_file):
     """
@@ -79,7 +85,7 @@ def create_lag_features(df, feature_cols, lags=[1, 2, 3, 5, 10]):
     If today's Close = $100, then:
     - Close_lag_1 = yesterday's close ($98)
     - Close_lag_2 = 2 days ago close ($97)
-    This helps model learn: "When price was $97 → $98 → $100, what happens next?"
+    This helps model learn: "When price was $97 -> $98 -> $100, what happens next?"
     """
     # IMPORTANT: Only keep Date + feature_cols to avoid NaN from unused technical indicators
     keep_cols = ['Date'] + feature_cols
@@ -128,36 +134,36 @@ def create_lag_features(df, feature_cols, lags=[1, 2, 3, 5, 10]):
 
     return df_lagged, all_features
 
-def split_train_test(df, train_ratio=5/6):
+def split_train_test(df, train_ratio=9/10):
     """
     Split data into training and testing sets
 
     IMPORTANT: For time series, we CANNOT use random split!
     We must preserve chronological order:
-    - Training data: Past (5 months)
-    - Test data: Future (1 month)
+    - Training data: Past (90%)
+    - Test data: Future (10%)
 
     This simulates real-world trading: train on historical data,
     then test on future unseen data.
 
     Args:
         df (DataFrame): Input dataframe
-        train_ratio (float): Proportion for training (5/6 = 83.3%)
+        train_ratio (float): Proportion for training (9/10 = 90%)
 
     Returns:
-        train_df: Training data (first 5 months)
-        test_df: Test data (last 1 month)
+        train_df: Training data (first 90%)
+        test_df: Test data (last 10%)
 
-    Why 5/6 split?
-    - 6 months total data
-    - 5 months (83%) = training (model learns patterns)
-    - 1 month (17%) = testing (evaluate real performance)
+    Why 9/10 split?
+    - 48 months total data
+    - 43 months (90%) = training (model learns patterns)
+    - 5 months (10%) = testing (evaluate real performance)
     """
     split_idx = int(len(df) * train_ratio)
 
     # CHRONOLOGICAL split - do NOT shuffle!
-    train_df = df[:split_idx]  # First 5 months
-    test_df = df[split_idx:]   # Last 1 month
+    train_df = df[:split_idx]  # First 90%
+    test_df = df[split_idx:]   # Last 10%
 
     print(f"\nData split:")
     print(f"Training set: {len(train_df)} records ({train_df['Date'].min()} to {train_df['Date'].max()})")
@@ -186,8 +192,8 @@ def calculate_direction_metrics(y_true, y_pred):
         accuracy, precision, recall, f1 (floats): Classification metrics
 
     Example:
-    Day 1: $100 → Day 2: $102 (UP) ✓ predicted correctly = 1
-    Day 2: $102 → Day 3: $101 (DOWN) ✗ predicted UP = 0
+    Day 1: $100 -> Day 2: $102 (UP) [checkmark] predicted correctly = 1
+    Day 2: $102 -> Day 3: $101 (DOWN) [x] predicted UP = 0
     Accuracy = 1/2 = 50%
     """
     # Convert consecutive prices to direction changes
@@ -256,7 +262,7 @@ def train_xgboost_model(csv_file, n_estimators=1000, learning_rate=0.01, max_dep
 
             # === Regularization Parameters (prevent overfitting) ===
             subsample=0.8,  # Use 80% of data for each tree (random sampling)
-                            # Adds randomness → reduces overfitting
+                            # Adds randomness -> reduces overfitting
             colsample_bytree=0.8,  # Use 80% of features for each tree
                                    # Prevents model from relying too heavily on any single feature
 
@@ -281,7 +287,7 @@ def train_xgboost_model(csv_file, n_estimators=1000, learning_rate=0.01, max_dep
         )
 
     # Train model
-    # XGBoost builds trees sequentially: Tree1 → Tree2 → Tree3 → ...
+    # XGBoost builds trees sequentially: Tree1 -> Tree2 -> Tree3 -> ...
     # Each new tree learns to correct the errors of all previous trees
     print("\nTraining XGBoost model...")
     model.fit(
@@ -364,6 +370,77 @@ def train_xgboost_model(csv_file, n_estimators=1000, learning_rate=0.01, max_dep
     plt.tight_layout()
     plt.savefig('xgboost_predictions.png')
     print("Predictions plot saved as: xgboost_predictions.png")
+
+    # === Generate Trading Signal ===
+    print("\n" + "="*60)
+    print("TRADING SIGNAL FOR NEXT DAY")
+    print("="*60)
+
+    # Get today's actual price (last row of lagged data before dropna)
+    today_price = df[feature_cols + ['Date']].iloc[-1]['Close']
+
+    # Create features for tomorrow's prediction
+    # Use the most recent data point from df_lagged (has all lag features)
+    recent_features = df_lagged[all_features].iloc[-1:].values
+    recent_features_scaled = scaler.transform(recent_features)
+
+    # Predict tomorrow's price
+    tomorrow_pred = model.predict(recent_features_scaled)[0]
+
+    # Calculate expected move
+    expected_move = tomorrow_pred - today_price
+    expected_move_pct = (expected_move / today_price) * 100
+
+    # Determine signal
+    if expected_move_pct > 0.5:
+        signal = "BUY (LONG)"
+        signal_emoji = "[BUY]"
+    elif expected_move_pct < -0.5:
+        signal = "SHORT (SELL)"
+        signal_emoji = "[SHORT]"
+    else:
+        signal = "HOLD (No clear signal)"
+        signal_emoji = "[HOLD]"
+
+    # Calculate stop loss and take profit using recent volatility
+    recent_prices = df[['Close']].tail(20)['Close']
+    daily_returns = recent_prices.pct_change().dropna()
+    volatility = daily_returns.std() * today_price
+
+    # Stop Loss: 2x volatility, Take Profit: 3x volatility
+    stop_loss_distance = 2 * volatility
+    take_profit_distance = 3 * volatility
+
+    if signal == "BUY (LONG)":
+        stop_loss = today_price - stop_loss_distance
+        take_profit = today_price + take_profit_distance
+    elif signal == "SHORT (SELL)":
+        stop_loss = today_price + stop_loss_distance
+        take_profit = today_price - take_profit_distance
+    else:
+        stop_loss = today_price - stop_loss_distance
+        take_profit = today_price + take_profit_distance
+
+    confidence = test_acc * 100
+
+    # Print trading signal
+    print(f"\n{signal_emoji} SIGNAL: {signal}")
+    print(f"\nCurrent Price (Today):     ${today_price:.2f}")
+    print(f"Predicted Price (Tomorrow): ${tomorrow_pred:.2f}")
+    print(f"Expected Move:             ${expected_move:+.2f} ({expected_move_pct:+.2f}%)")
+    print(f"\nRisk Management:")
+    print(f"  Stop Loss:     ${stop_loss:.2f} ({((stop_loss - today_price) / today_price * 100):+.2f}%)")
+    print(f"  Take Profit:   ${take_profit:.2f} ({((take_profit - today_price) / today_price * 100):+.2f}%)")
+    print(f"  Risk/Reward:   1.5:1")
+    print(f"\nModel Confidence: {confidence:.1f}% (based on test accuracy)")
+    print(f"Recent Volatility: ${volatility:.2f} per day")
+
+    print("\n" + "="*60)
+    print("DISCLAIMER:")
+    print("This is a statistical prediction, NOT financial advice.")
+    print("Past performance does not guarantee future results.")
+    print("Always do your own research and manage risk appropriately.")
+    print("="*60)
 
     # Save model
     joblib.dump(model, 'xgboost_model.pkl')
