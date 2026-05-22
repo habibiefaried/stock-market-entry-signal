@@ -484,6 +484,188 @@ python train_xgboost.py MSFT_daily_data_20260520.csv
 python main.py MSFT_daily_data_20260520.csv
 ```
 
+## 🎯 Multi-Approach Win Probability Analysis
+
+**NEW FEATURE**: All models now include advanced probability analysis that answers: **"What's the probability this trade hits Take Profit before Stop Loss?"**
+
+Instead of just predicting tomorrow's price, the system uses **3 independent approaches** to calculate your actual win probability over the next 5 days:
+
+### The Three Approaches
+
+#### 1️⃣ Multi-Day Sequential Prediction
+- Uses the trained model to predict next 5 days sequentially
+- Simulates the most likely price path according to the model
+- Checks which day (if any) hits your TP or SL first
+- **Output**: Binary result (will hit TP: 100% or will hit SL: 0%)
+
+#### 2️⃣ Monte Carlo Simulation (Default: 1000 runs)
+- Generates thousands of random price paths based on historical volatility
+- Each path includes model's predicted trend + market randomness
+- Counts how many simulations hit TP vs SL first
+- **Output**: Statistical win rate (e.g., "714 out of 1000 hit TP = 71% probability")
+
+#### 3️⃣ Historical Pattern Matching (Default: 50 patterns)
+- Searches last 200 days for similar market conditions:
+  - Similar RSI (momentum indicator)
+  - Similar volatility level
+  - Similar trend direction
+- Checks what happened in those similar setups
+- **Output**: Historical success rate (e.g., "31 out of 48 won = 64% probability")
+
+### Ensemble Decision
+
+The system combines all three approaches using weighted average:
+- **Multi-Day Prediction**: 40% weight
+- **Monte Carlo**: 35% weight
+- **Historical Patterns**: 25% weight
+
+**Final Output:**
+```
+✨ ENSEMBLE WIN PROBABILITY: 68%
+   Confidence Level: HIGH
+   Recommendation: TAKE TRADE
+```
+
+### Configurable Parameters
+
+All parameters are in `trade_probability_analyzer.py` and can be adjusted:
+
+```python
+# Multi-Day Prediction
+PREDICTION_DAYS = 5              # Days to predict ahead (default: 5 = 1 week)
+MIN_CONFIDENCE_THRESHOLD = 60.0  # Min win % to recommend trade (default: 60%)
+
+# Monte Carlo Simulation
+MONTE_CARLO_SIMULATIONS = 1000   # Number of simulations (default: 1000)
+MC_DRIFT_INFLUENCE = 0.3         # Trend bias strength 0-1 (default: 0.3)
+
+# Historical Pattern Matching
+PATTERN_LOOKBACK = 200           # Days to search back (default: 200)
+PATTERN_MATCH_COUNT = 50         # Similar patterns to find (default: 50)
+RSI_TOLERANCE = 5                # RSI similarity ± (default: 5)
+VOLATILITY_TOLERANCE = 0.2       # Volatility similarity ± (default: 20%)
+
+# Ensemble Weights (must sum to 1.0)
+WEIGHT_PREDICTION = 0.4          # Multi-day prediction weight
+WEIGHT_MONTE_CARLO = 0.35        # Monte Carlo weight
+WEIGHT_PATTERN = 0.25            # Pattern matching weight
+
+# Confidence Levels
+CONFIDENCE_HIGH = 75.0           # Above this = HIGH confidence
+CONFIDENCE_MEDIUM = 65.0         # Medium-High threshold
+```
+
+### How to Use
+
+The probability analysis runs automatically when you train any model:
+
+```bash
+# Runs probability analysis for all 3 models
+python main.py --ticker TSLA
+
+# Or for individual model
+python train_lightgbm.py TSLA_daily_data_20260522.csv
+```
+
+### Understanding the Output
+
+**Console Output Example:**
+```
+📊 TRADE PROBABILITY ANALYSIS
+══════════════════════════════════════════════════════════════════════
+Current Price: $417.85
+Signal: SHORT (SELL)
+Stop Loss: $424.14 (+1.50%)
+Take Profit: $407.37 (-2.51%)
+
+──────────────────────────────────────────────────────────────────────
+APPROACH 1: Multi-Day Sequential Prediction
+──────────────────────────────────────────────────────────────────────
+✅ Predicts TAKE PROFIT hit on Day 2
+   Win Probability: 100%
+
+   Predicted Path (5-day):
+   Day 1: $410.84
+   Day 2: $408.12 ← 🎯 HIT TAKE PROFIT
+   Day 3: $406.50
+   Day 4: $409.20
+   Day 5: $411.00
+
+──────────────────────────────────────────────────────────────────────
+APPROACH 2: Monte Carlo Simulation (1000 runs)
+──────────────────────────────────────────────────────────────────────
+Win Probability: 71.4%
+  • 714 simulations hit Take Profit
+  • 286 simulations hit Stop Loss
+  • 0 simulations hit neither
+  • Avg days to TP: 2.3
+  • Avg days to SL: 1.8
+
+──────────────────────────────────────────────────────────────────────
+APPROACH 3: Historical Pattern Matching
+──────────────────────────────────────────────────────────────────────
+Win Probability: 64.6%
+  • Found 48 similar historical setups
+  • 31 times TP was hit first
+  • 17 times SL was hit first
+  • 0 times neither was hit
+
+══════════════════════════════════════════════════════════════════════
+🎖️  ENSEMBLE DECISION
+══════════════════════════════════════════════════════════════════════
+
+✨ ENSEMBLE WIN PROBABILITY: 78.4%
+   Confidence Level: HIGH
+   Recommendation: TAKE TRADE
+
+   Contributing Methods:
+   • Multi-Day Prediction: 100.0%
+   • Monte Carlo: 71.4%
+   • Historical Patterns: 64.6%
+
+✅ RECOMMENDATION: SHORT (SELL)
+   This trade has 78.4% probability of hitting
+   Take Profit before Stop Loss in the next 5 days.
+```
+
+### Trading Strategy with Probability
+
+**Recommended Rules:**
+- **Probability ≥ 75% (HIGH)**: Strong trade, full position size
+- **Probability 65-75% (MEDIUM)**: Good trade, reduce position size 50%
+- **Probability 60-65% (LOW)**: Marginal trade, smallest position or skip
+- **Probability < 60%**: Skip trade, wait for better setup
+
+**IQ Option Settings (5x Leverage):**
+The models automatically calculate your leveraged position P&L:
+```
+5x Leverage Position P&L (for IQ Option auto-close):
+  Stop Loss %:   +7.5%    (stock moves 1.5% against you)
+  Take Profit %: -12.5%   (stock moves 2.5% in your favor)
+  Risk/Reward:   1.67:1
+```
+
+### Swing Trading Configuration
+
+Current settings are optimized for **1-2 day swing trades with 5x leverage**:
+- Stop Loss: 0.6× volatility (~1.5% stock move)
+- Take Profit: 1.0× volatility (~2.5% stock move)
+
+To change risk/reward, edit the training scripts (`train_lightgbm.py`, etc.):
+```python
+# Line ~457-458 in each training script
+stop_loss_distance = 0.6 * volatility  # Change multiplier for tighter/wider stops
+take_profit_distance = 1.0 * volatility  # Change multiplier for tighter/wider targets
+```
+
+### HTML Report Integration
+
+The probability analysis is automatically included in the HTML report generated by `main.py`. Each model's section shows:
+- Ensemble win probability
+- Confidence level (HIGH/MEDIUM/LOW)
+- Recommendation (TAKE TRADE / SKIP TRADE)
+- Individual method probabilities
+
 ## Notes
 
 - All data is fetched with daily intervals (1 day per candle)
@@ -497,3 +679,4 @@ python main.py MSFT_daily_data_20260520.csv
 - LSTM ultra-simplified to 1 layer (50 units) with 40% dropout - fastest training, minimal overfitting
 - LightGBM uses leaf-wise tree growth (2-4x faster than XGBoost's level-wise)
 - All models support GPU acceleration for faster training
+- **Probability analysis runs automatically** and takes ~5-10 seconds per model

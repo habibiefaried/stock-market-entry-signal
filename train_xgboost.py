@@ -30,6 +30,15 @@ logging.getLogger('matplotlib').setLevel(logging.ERROR)  # Suppress matplotlib w
 logging.getLogger('PIL').setLevel(logging.ERROR)  # Suppress PIL warnings
 logging.getLogger('xgboost').setLevel(logging.ERROR)  # Suppress XGBoost warnings
 
+# Import trade probability analyzer
+from trade_probability_analyzer import (
+    predict_multi_day_path,
+    monte_carlo_simulation,
+    find_similar_patterns,
+    calculate_ensemble_probability,
+    format_analysis_report
+)
+
 def load_and_prepare_data(csv_file):
     """
     Load CSV data and prepare basic features for XGBoost
@@ -407,9 +416,11 @@ def train_xgboost_model(csv_file, n_estimators=1000, learning_rate=0.01, max_dep
     daily_returns = recent_prices.pct_change().dropna()
     volatility = daily_returns.std() * today_price
 
-    # Stop Loss: 2x volatility, Take Profit: 3x volatility
-    stop_loss_distance = 2 * volatility
-    take_profit_distance = 3 * volatility
+    # SWING TRADING MODE (1-2 day trades with 5x leverage)
+    # Stop Loss: 0.6x volatility (~1.5% stock move = 7.5% position loss)
+    # Take Profit: 1.0x volatility (~2.5% stock move = 12.5% position gain)
+    stop_loss_distance = 0.6 * volatility
+    take_profit_distance = 1.0 * volatility
 
     if signal == "BUY (LONG)":
         stop_loss = today_price - stop_loss_distance
@@ -428,12 +439,82 @@ def train_xgboost_model(csv_file, n_estimators=1000, learning_rate=0.01, max_dep
     print(f"\nCurrent Price (Today):     ${today_price:.2f}")
     print(f"Predicted Price (Tomorrow): ${tomorrow_pred:.2f}")
     print(f"Expected Move:             ${expected_move:+.2f} ({expected_move_pct:+.2f}%)")
-    print(f"\nRisk Management:")
+    print(f"\nRisk Management (Stock Price Levels):")
     print(f"  Stop Loss:     ${stop_loss:.2f} ({((stop_loss - today_price) / today_price * 100):+.2f}%)")
     print(f"  Take Profit:   ${take_profit:.2f} ({((take_profit - today_price) / today_price * 100):+.2f}%)")
-    print(f"  Risk/Reward:   1.5:1")
+    print(f"\n5x Leverage Position P&L (for IQ Option auto-close):")
+    print(f"  Stop Loss %:   {((stop_loss - today_price) / today_price * 100 * 5):+.1f}%")
+    print(f"  Take Profit %: {((take_profit - today_price) / today_price * 100 * 5):+.1f}%")
+    print(f"  Risk/Reward:   1.67:1")
     print(f"\nModel Confidence: {confidence:.1f}% (based on test accuracy)")
     print(f"Recent Volatility: ${volatility:.2f} per day")
+
+    # ========================================================================
+    # MULTI-APPROACH PROBABILITY ANALYSIS
+    # ========================================================================
+    print("\n" + "="*70)
+    print("Running Multi-Approach Win Probability Analysis...")
+    print("="*70)
+
+    # Approach 1: Multi-Day Sequential Prediction
+    print("\n[1/3] Running multi-day sequential prediction...")
+    prediction_result = predict_multi_day_path(
+        model=model,
+        scaler=scaler,
+        df=df_lagged,  # Use the LAGGED dataframe with engineered features
+        feature_cols=all_features,  # Use ALL engineered features, not just basic OHLCV
+        current_price=today_price,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        model_type='gbm'
+    )
+
+    # Approach 2: Monte Carlo Simulation
+    print("[2/3] Running Monte Carlo simulation...")
+    monte_carlo_result = monte_carlo_simulation(
+        current_price=today_price,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        volatility=volatility,
+        predicted_move_pct=expected_move_pct
+    )
+
+    # Approach 3: Historical Pattern Matching
+    print("[3/3] Searching historical patterns...")
+    pattern_result = find_similar_patterns(
+        df=df,
+        current_price=today_price,
+        stop_loss=stop_loss,
+        take_profit=take_profit
+    )
+
+    # Calculate Ensemble Probability
+    ensemble_result = calculate_ensemble_probability(
+        prediction_result=prediction_result,
+        monte_carlo_result=monte_carlo_result,
+        pattern_result=pattern_result
+    )
+
+    # Print detailed report
+    analysis_report = format_analysis_report(
+        prediction_result=prediction_result,
+        monte_carlo_result=monte_carlo_result,
+        pattern_result=pattern_result,
+        ensemble_result=ensemble_result,
+        signal=signal,
+        current_price=today_price,
+        stop_loss=stop_loss,
+        take_profit=take_profit
+    )
+    print(analysis_report)
+
+    # Store results for HTML report (will be parsed by main.py)
+    print("\n" + "="*70)
+    print("PROBABILITY_ANALYSIS_RESULTS:")
+    print(f"ENSEMBLE_PROBABILITY: {ensemble_result['ensemble_probability']:.1f}%" if ensemble_result else "ENSEMBLE_PROBABILITY: N/A")
+    print(f"CONFIDENCE_LEVEL: {ensemble_result['confidence_level']}" if ensemble_result else "CONFIDENCE_LEVEL: N/A")
+    print(f"RECOMMENDATION: {ensemble_result['recommendation']}" if ensemble_result else "RECOMMENDATION: N/A")
+    print("="*70)
 
     print("\n" + "="*60)
     print("DISCLAIMER:")
