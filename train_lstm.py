@@ -590,7 +590,7 @@ def train_lstm_model(csv_file, lookback=60, epochs=100, batch_size=32):
     print("\n[1/3] Running multi-day sequential prediction...")
     prediction_result = predict_multi_day_path(
         model=model,
-        scaler=scaler,
+        scaler=scaler_X,  # LSTM uses scaler_X for features
         df=df,  # LSTM uses original df with basic OHLCV features
         feature_cols=feature_cols,  # LSTM uses basic features (no lag features)
         current_price=today_price,

@@ -243,7 +243,178 @@ def parse_trading_signal(output):
     if vol_match:
         signal['volatility'] = float(vol_match.group(1).replace(',', ''))
 
+    # Parse probability analysis results
+    ensemble_prob_match = re.search(r'ENSEMBLE_PROBABILITY:\s+([\d.]+)%', output)
+    if ensemble_prob_match:
+        signal['ensemble_probability'] = float(ensemble_prob_match.group(1))
+
+    confidence_level_match = re.search(r'CONFIDENCE_LEVEL:\s+(\w+)', output)
+    if confidence_level_match:
+        signal['confidence_level'] = confidence_level_match.group(1)
+
+    recommendation_match = re.search(r'RECOMMENDATION:\s+(.+?)(?:\n|$)', output)
+    if recommendation_match:
+        signal['recommendation'] = recommendation_match.group(1).strip()
+
+    # Parse individual approach results from the detailed analysis
+    # Approach 1: Multi-Day Prediction
+    pred_win_match = re.search(r'\[WIN\] Predicts TAKE PROFIT hit on Day (\d+)', output)
+    pred_loss_match = re.search(r'\[LOSS\] Predicts STOP LOSS hit on Day (\d+)', output)
+    pred_neutral_match = re.search(r'\[NEUTRAL\] Neither TP nor SL hit', output)
+
+    if pred_win_match:
+        signal['approach1_result'] = 'WIN'
+        signal['approach1_probability'] = 100.0
+        signal['approach1_day'] = int(pred_win_match.group(1))
+    elif pred_loss_match:
+        signal['approach1_result'] = 'LOSS'
+        signal['approach1_probability'] = 0.0
+        signal['approach1_day'] = int(pred_loss_match.group(1))
+    elif pred_neutral_match:
+        signal['approach1_result'] = 'NEUTRAL'
+        signal['approach1_probability'] = None
+
+    # Parse predicted path
+    path_match = re.findall(r'Day (\d+): \$(\d+\.?\d*)', output)
+    if path_match:
+        signal['predicted_path'] = [(int(day), float(price)) for day, price in path_match]
+
+    # Approach 2: Monte Carlo
+    mc_win_match = re.search(r'Win Probability: ([\d.]+)%.*?(\d+) simulations hit Take Profit.*?(\d+) simulations hit Stop Loss', output, re.DOTALL)
+    if mc_win_match:
+        signal['approach2_probability'] = float(mc_win_match.group(1))
+        signal['approach2_tp_count'] = int(mc_win_match.group(2))
+        signal['approach2_sl_count'] = int(mc_win_match.group(3))
+
+    # Approach 3: Historical Patterns
+    pattern_win_match = re.search(r'Found (\d+) similar historical setups.*?(\d+) times TP was hit first.*?(\d+) times SL was hit first', output, re.DOTALL)
+    if pattern_win_match:
+        signal['approach3_matches'] = int(pattern_win_match.group(1))
+        signal['approach3_tp_count'] = int(pattern_win_match.group(2))
+        signal['approach3_sl_count'] = int(pattern_win_match.group(3))
+        total = signal['approach3_tp_count'] + signal['approach3_sl_count']
+        if total > 0:
+            signal['approach3_probability'] = (signal['approach3_tp_count'] / total) * 100
+
     return signal
+
+def generate_probability_html(signal):
+    """Generate beautiful HTML for probability analysis section"""
+    if 'ensemble_probability' not in signal:
+        return ""
+
+    prob = signal['ensemble_probability']
+    conf_level = signal.get('confidence_level', 'LOW')
+    recommendation = signal.get('recommendation', 'N/A')
+
+    # Determine probability circle class
+    if prob >= 75:
+        prob_class = 'prob-high'
+    elif prob >= 65:
+        prob_class = 'prob-medium'
+    else:
+        prob_class = 'prob-low'
+
+    # Determine confidence badge class
+    if conf_level == 'HIGH':
+        conf_class = 'conf-high'
+    elif conf_level == 'MEDIUM':
+        conf_class = 'conf-medium'
+    else:
+        conf_class = 'conf-low'
+
+    # Determine recommendation badge class
+    rec_class = 'rec-take' if 'TAKE' in recommendation else 'rec-skip'
+    rec_text = '✓ TAKE TRADE' if 'TAKE' in recommendation else '✗ SKIP TRADE'
+
+    html = []
+    html.append('<div class="probability-section">')
+    html.append('    <div class="probability-header">')
+    html.append('        <h3 class="probability-title">🎯 Multi-Approach Win Probability Analysis</h3>')
+    html.append('    </div>')
+    html.append('    <div class="ensemble-result">')
+    html.append(f'        <div class="probability-circle {prob_class}">')
+    html.append(f'            <div class="probability-value">{prob:.1f}%</div>')
+    html.append('            <div class="probability-label">Win Probability</div>')
+    html.append('        </div>')
+    html.append(f'        <div class="confidence-badge {conf_class}">{conf_level} CONFIDENCE</div>')
+    html.append(f'        <div class="recommendation-badge {rec_class}">{rec_text}</div>')
+    html.append('    </div>')
+
+    # Generate individual approach cards
+    html.append('    <div class="approaches-grid">')
+
+    # Approach 1: Multi-Day Prediction
+    html.append('        <div class="approach-card">')
+    html.append('            <div class="approach-header">📈 Approach 1: Multi-Day Prediction</div>')
+
+    if 'approach1_probability' in signal and signal['approach1_probability'] is not None:
+        html.append(f'            <div class="approach-probability">{signal["approach1_probability"]:.1f}%</div>')
+        html.append('            <div class="approach-details">')
+
+        if signal.get('approach1_result') == 'WIN':
+            html.append(f'                <strong>Result:</strong> Predicts TP hit on Day {signal.get("approach1_day", "?")}<br>')
+        elif signal.get('approach1_result') == 'LOSS':
+            html.append(f'                <strong>Result:</strong> Predicts SL hit on Day {signal.get("approach1_day", "?")}<br>')
+        else:
+            html.append('                <strong>Result:</strong> Neither TP nor SL hit in 5 days<br>')
+
+        # Show predicted path if available
+        if 'predicted_path' in signal and signal['predicted_path']:
+            html.append('                <br><strong>Predicted Path (5-day):</strong>')
+            html.append('                <table class="path-table">')
+            for day, price in signal['predicted_path'][:5]:  # Show max 5 days
+                marker = ''
+                if signal.get('approach1_result') == 'WIN' and day == signal.get('approach1_day'):
+                    marker = '<span class="hit-marker">TP HIT</span>'
+                elif signal.get('approach1_result') == 'LOSS' and day == signal.get('approach1_day'):
+                    marker = '<span class="hit-marker" style="background:#ee0979;">SL HIT</span>'
+                html.append(f'                    <tr><td>Day {day}:</td><td>${price:.2f}</td><td>{marker}</td></tr>')
+            html.append('                </table>')
+        html.append('            </div>')
+    else:
+        html.append('            <div class="approach-details">No prediction data available</div>')
+
+    html.append('        </div>')
+
+    # Approach 2: Monte Carlo
+    html.append('        <div class="approach-card">')
+    html.append('            <div class="approach-header">🎲 Approach 2: Monte Carlo (1000 runs)</div>')
+
+    if 'approach2_probability' in signal:
+        html.append(f'            <div class="approach-probability">{signal["approach2_probability"]:.1f}%</div>')
+        html.append('            <div class="approach-details">')
+        html.append(f'                <strong>{signal.get("approach2_tp_count", 0)}</strong> simulations hit Take Profit<br>')
+        html.append(f'                <strong>{signal.get("approach2_sl_count", 0)}</strong> simulations hit Stop Loss<br>')
+        html.append(f'                <strong>{1000 - signal.get("approach2_tp_count", 0) - signal.get("approach2_sl_count", 0)}</strong> simulations hit neither<br>')
+        html.append('                <br>Uses historical volatility + predicted trend to generate random price paths')
+        html.append('            </div>')
+    else:
+        html.append('            <div class="approach-details">No Monte Carlo data available</div>')
+
+    html.append('        </div>')
+
+    # Approach 3: Historical Patterns
+    html.append('        <div class="approach-card">')
+    html.append('            <div class="approach-header">📊 Approach 3: Historical Patterns</div>')
+
+    if 'approach3_probability' in signal:
+        html.append(f'            <div class="approach-probability">{signal["approach3_probability"]:.1f}%</div>')
+        html.append('            <div class="approach-details">')
+        html.append(f'                Found <strong>{signal.get("approach3_matches", 0)}</strong> similar historical setups<br>')
+        html.append(f'                <strong>{signal.get("approach3_tp_count", 0)}</strong> times TP was hit first<br>')
+        html.append(f'                <strong>{signal.get("approach3_sl_count", 0)}</strong> times SL was hit first<br>')
+        html.append('                <br>Matches current RSI, volatility, and trend direction to past setups')
+        html.append('            </div>')
+    else:
+        html.append('            <div class="approach-details">No historical pattern data available</div>')
+
+    html.append('        </div>')
+
+    html.append('    </div>')  # Close approaches-grid
+    html.append('</div>')  # Close probability-section
+
+    return '\n'.join(html)
 
 def generate_html_report(results, csv_file, output_file):
     """
@@ -269,115 +440,400 @@ def generate_html_report(results, csv_file, output_file):
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stock Price Prediction Report: """ + ticker + """</title>
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             line-height: 1.6;
-            max-width: 1200px;
-            margin: 0 auto;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             padding: 20px;
-            background-color: #f5f5f5;
+            min-height: 100vh;
         }
+
         .container {
+            max-width: 1400px;
+            margin: 0 auto;
             background-color: white;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
         }
-        h1 {
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .header .ticker-badge {
+            display: inline-block;
+            background: rgba(255,255,255,0.2);
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-size: 1.2em;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .info-bar {
+            display: flex;
+            justify-content: space-around;
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+
+        .info-item {
+            text-align: center;
+            padding: 10px;
+        }
+
+        .info-label {
+            font-size: 0.9em;
+            color: #6c757d;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .info-value {
+            font-size: 1.3em;
             color: #2c3e50;
-            border-bottom: 3px solid #3498db;
+            font-weight: 700;
+            margin-top: 5px;
+        }
+
+        .section {
+            margin-bottom: 40px;
+        }
+
+        .section-title {
+            font-size: 1.8em;
+            color: #2c3e50;
+            margin-bottom: 20px;
             padding-bottom: 10px;
+            border-bottom: 3px solid #667eea;
+            font-weight: 700;
         }
-        h2 {
-            color: #34495e;
-            margin-top: 30px;
-            border-bottom: 2px solid #ecf0f1;
-            padding-bottom: 5px;
+
+        .model-card {
+            background: white;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.07);
+            transition: transform 0.2s, box-shadow 0.2s;
         }
-        h3 {
-            color: #7f8c8d;
+
+        .model-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 15px rgba(0,0,0,0.15);
         }
+
+        .model-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+            flex-wrap: wrap;
+        }
+
+        .model-name {
+            font-size: 1.8em;
+            font-weight: 700;
+            color: #2c3e50;
+        }
+
+        .signal-badge {
+            padding: 10px 25px;
+            border-radius: 25px;
+            font-weight: 700;
+            font-size: 1.1em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .signal-buy {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+        }
+
+        .signal-short {
+            background: linear-gradient(135deg, #ee0979 0%, #ff6a00 100%);
+            color: white;
+        }
+
+        .signal-hold {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 25px 0;
+        }
+
+        .stat-box {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            border-left: 4px solid #667eea;
+        }
+
+        .stat-label {
+            font-size: 0.85em;
+            color: #6c757d;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .stat-value {
+            font-size: 1.6em;
+            font-weight: 700;
+            color: #2c3e50;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
             margin: 20px 0;
+            background: white;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
-        th, td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #ecf0f1;
-        }
+
         th {
-            background-color: #3498db;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            font-weight: bold;
+            padding: 15px;
+            text-align: left;
+            font-weight: 700;
+            text-transform: uppercase;
+            font-size: 0.9em;
+            letter-spacing: 0.5px;
         }
+
+        td {
+            padding: 15px;
+            border-bottom: 1px solid #e9ecef;
+        }
+
         tr:hover {
             background-color: #f8f9fa;
         }
-        .signal-box {
-            background-color: #f8f9fa;
-            border-left: 4px solid #3498db;
-            padding: 15px;
-            margin: 15px 0;
-            border-radius: 4px;
+
+        tr:last-child td {
+            border-bottom: none;
         }
-        .signal-buy {
-            border-left-color: #27ae60;
-            background-color: #e8f8f5;
+
+        .probability-section {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            border-radius: 12px;
+            padding: 30px;
+            margin-top: 25px;
         }
-        .signal-short {
-            border-left-color: #e74c3c;
-            background-color: #fadbd8;
+
+        .probability-header {
+            text-align: center;
+            margin-bottom: 30px;
         }
-        .signal-hold {
-            border-left-color: #f39c12;
-            background-color: #fef5e7;
-        }
-        .badge {
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 0.85em;
-            font-weight: bold;
-        }
-        .badge-success {
-            background-color: #27ae60;
-            color: white;
-        }
-        .badge-danger {
-            background-color: #e74c3c;
-            color: white;
-        }
-        .badge-warning {
-            background-color: #f39c12;
-            color: white;
-        }
-        .disclaimer {
-            background-color: #fff3cd;
-            border: 1px solid #ffc107;
-            padding: 15px;
-            border-radius: 4px;
-            margin: 20px 0;
-        }
-        .metric {
-            display: inline-block;
-            margin-right: 20px;
-        }
-        .metric-label {
-            font-weight: bold;
-            color: #7f8c8d;
-        }
-        .metric-value {
+
+        .probability-title {
+            font-size: 1.5em;
             color: #2c3e50;
+            margin-bottom: 15px;
+            font-weight: 700;
+        }
+
+        .ensemble-result {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 30px;
+            flex-wrap: wrap;
+            margin-bottom: 30px;
+        }
+
+        .probability-circle {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-weight: 700;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+        }
+
+        .prob-high {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+        }
+
+        .prob-medium {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+
+        .prob-low {
+            background: linear-gradient(135deg, #868f96 0%, #596164 100%);
+        }
+
+        .probability-value {
+            font-size: 2.5em;
+        }
+
+        .probability-label {
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+
+        .confidence-badge {
+            padding: 12px 30px;
+            border-radius: 25px;
+            font-weight: 700;
             font-size: 1.1em;
+            color: white;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
-        code {
-            background-color: #f4f4f4;
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-family: 'Courier New', monospace;
+
+        .conf-high {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
         }
+
+        .conf-medium {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+
+        .conf-low {
+            background: linear-gradient(135deg, #868f96 0%, #596164 100%);
+        }
+
+        .recommendation-badge {
+            padding: 15px 40px;
+            border-radius: 30px;
+            font-weight: 700;
+            font-size: 1.2em;
+            color: white;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            box-shadow: 0 6px 12px rgba(0,0,0,0.2);
+        }
+
+        .rec-take {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+        }
+
+        .rec-skip {
+            background: linear-gradient(135deg, #ee0979 0%, #ff6a00 100%);
+        }
+
+        .approaches-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 25px;
+        }
+
+        .approach-card {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .approach-header {
+            font-size: 1.2em;
+            font-weight: 700;
+            color: #2c3e50;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+
+        .approach-probability {
+            font-size: 2.5em;
+            font-weight: 700;
+            color: #667eea;
+            margin: 15px 0;
+            text-align: center;
+        }
+
+        .approach-details {
+            font-size: 0.95em;
+            color: #6c757d;
+            line-height: 1.8;
+        }
+
+        .path-table {
+            margin-top: 15px;
+            font-size: 0.9em;
+        }
+
+        .path-table td {
+            padding: 8px;
+        }
+
+        .hit-marker {
+            background: #38ef7d;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 15px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+
+        .disclaimer {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 30px 0;
+        }
+
+        .disclaimer h3 {
+            color: #856404;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .disclaimer p {
+            color: #856404;
+            margin: 5px 0;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: #6c757d;
+            font-size: 0.9em;
+            border-top: 1px solid #e9ecef;
+        }
+
         pre {
             background-color: #f4f4f4;
             padding: 15px;
@@ -417,17 +873,25 @@ def generate_html_report(results, csv_file, output_file):
 </head>
 <body>
     <div class="container">
-        <h1>Stock Price Prediction Report: """ + ticker + """</h1>
-        <div class="header-info">
-            <div class="metric">
-                <span class="metric-label">Generated:</span>
-                <span class="metric-value">""" + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + """</span>
-            </div>
-            <div class="metric">
-                <span class="metric-label">Data Source:</span>
-                <span class="metric-value">""" + csv_file + """</span>
-            </div>
+        <div class="header">
+            <h1>Stock Price Prediction Report</h1>
+            <div class="ticker-badge">""" + ticker + """</div>
         </div>
+        <div class="content">
+            <div class="info-bar">
+                <div class="info-item">
+                    <div class="info-label">Generated</div>
+                    <div class="info-value">""" + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + """</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Data Source</div>
+                    <div class="info-value">""" + os.path.basename(csv_file) + """</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Models Trained</div>
+                    <div class="info-value">""" + str(len(results)) + """</div>
+                </div>
+            </div>
 """)
 
     # Executive Summary
@@ -495,48 +959,107 @@ def generate_html_report(results, csv_file, output_file):
 
     # Trading Signals
     if successful_models:
-        html.append("## Trading Signals\n")
-        html.append("All models predict tomorrow's price and provide trading recommendations.\n")
+        html.append('<div class="section">')
+        html.append('    <h2 class="section-title">📊 Trading Signals & Analysis</h2>')
 
         for result in successful_models:
             signal = parse_trading_signal(result['output'])
 
             if signal:
-                html.append(f"### {result['name']}\n")
-
-                # Signal
+                # Determine signal class
                 signal_text = signal.get('signal', 'UNKNOWN')
                 if 'BUY' in signal_text:
-                    prefix = "[BUY]"
+                    signal_class = 'signal-buy'
+                    signal_badge = f'<span class="signal-badge signal-buy">🚀 BUY (LONG)</span>'
                 elif 'SHORT' in signal_text:
-                    prefix = "[SHORT]"
+                    signal_class = 'signal-short'
+                    signal_badge = f'<span class="signal-badge signal-short">📉 SHORT (SELL)</span>'
                 else:
-                    prefix = "[HOLD]"
+                    signal_class = 'signal-hold'
+                    signal_badge = f'<span class="signal-badge signal-hold">⏸️ HOLD</span>'
 
-                html.append(f"**{prefix} Signal:** {signal_text}\n")
+                html.append('    <div class="model-card">')
+                html.append('        <div class="model-header">')
+                html.append(f'            <div class="model-name">{result["name"]}</div>')
+                html.append(f'            {signal_badge}')
+                html.append('        </div>')
 
-                # Prices
+                # Stats Grid
+                html.append('        <div class="stats-grid">')
+
                 if 'current_price' in signal:
-                    html.append(f"- **Current Price:** ${signal['current_price']:,.2f}")
+                    html.append('            <div class="stat-box">')
+                    html.append('                <div class="stat-label">Current Price</div>')
+                    html.append(f'                <div class="stat-value">${signal["current_price"]:,.2f}</div>')
+                    html.append('            </div>')
+
                 if 'predicted_price' in signal:
-                    html.append(f"- **Predicted Tomorrow:** ${signal['predicted_price']:,.2f}")
+                    html.append('            <div class="stat-box">')
+                    html.append('                <div class="stat-label">Predicted Tomorrow</div>')
+                    html.append(f'                <div class="stat-value">${signal["predicted_price"]:,.2f}</div>')
+                    html.append('            </div>')
+
                 if 'expected_move' in signal and 'expected_move_pct' in signal:
-                    html.append(f"- **Expected Move:** ${signal['expected_move']:+,.2f} ({signal['expected_move_pct']:+.2f}%)")
+                    move_color = '#27ae60' if signal['expected_move'] > 0 else '#e74c3c'
+                    html.append('            <div class="stat-box">')
+                    html.append('                <div class="stat-label">Expected Move</div>')
+                    html.append(f'                <div class="stat-value" style="color:{move_color}">${signal["expected_move"]:+,.2f} ({signal["expected_move_pct"]:+.2f}%)</div>')
+                    html.append('            </div>')
 
-                # Risk management
-                html.append("\n**Risk Management:**")
-                if 'stop_loss' in signal and 'stop_loss_pct' in signal:
-                    html.append(f"- **Stop Loss:** ${signal['stop_loss']:,.2f} ({signal['stop_loss_pct']:+.2f}%)")
-                if 'take_profit' in signal and 'take_profit_pct' in signal:
-                    html.append(f"- **Take Profit:** ${signal['take_profit']:,.2f} ({signal['take_profit_pct']:+.2f}%)")
-
-                # Additional info
                 if 'confidence' in signal:
-                    html.append(f"- **Confidence:** {signal['confidence']:.1f}%")
-                if 'volatility' in signal:
-                    html.append(f"- **Daily Volatility:** ${signal['volatility']:,.2f}")
+                    html.append('            <div class="stat-box">')
+                    html.append('                <div class="stat-label">Model Confidence</div>')
+                    html.append(f'                <div class="stat-value">{signal["confidence"]:.1f}%</div>')
+                    html.append('            </div>')
 
-                html.append("")
+                html.append('        </div>')
+
+                # Risk Management Table
+                html.append('        <h4 style="margin-top:25px; color:#2c3e50;">Risk Management (5x Leverage)</h4>')
+                html.append('        <table>')
+                html.append('            <tr>')
+                html.append('                <th>Parameter</th>')
+                html.append('                <th>Stock Price Level</th>')
+                html.append('                <th>Stock Move %</th>')
+                html.append('                <th>Position P&L (5x)</th>')
+                html.append('            </tr>')
+
+                if 'stop_loss' in signal and 'stop_loss_pct' in signal:
+                    leverage_pct = signal['stop_loss_pct'] * 5
+                    html.append('            <tr>')
+                    html.append('                <td><strong>Stop Loss</strong></td>')
+                    html.append(f'                <td>${signal["stop_loss"]:,.2f}</td>')
+                    html.append(f'                <td>{signal["stop_loss_pct"]:+.2f}%</td>')
+                    html.append(f'                <td style="color:#e74c3c; font-weight:700;">{leverage_pct:+.1f}%</td>')
+                    html.append('            </tr>')
+
+                if 'take_profit' in signal and 'take_profit_pct' in signal:
+                    leverage_pct = signal['take_profit_pct'] * 5
+                    html.append('            <tr>')
+                    html.append('                <td><strong>Take Profit</strong></td>')
+                    html.append(f'                <td>${signal["take_profit"]:,.2f}</td>')
+                    html.append(f'                <td>{signal["take_profit_pct"]:+.2f}%</td>')
+                    html.append(f'                <td style="color:#27ae60; font-weight:700;">{leverage_pct:+.1f}%</td>')
+                    html.append('            </tr>')
+
+                if 'volatility' in signal:
+                    html.append('            <tr>')
+                    html.append('                <td><strong>Daily Volatility</strong></td>')
+                    html.append(f'                <td>${signal["volatility"]:,.2f}</td>')
+                    html.append('                <td>-</td>')
+                    html.append('                <td>-</td>')
+                    html.append('            </tr>')
+
+                html.append('        </table>')
+
+                # Probability Analysis
+                prob_html = generate_probability_html(signal)
+                if prob_html:
+                    html.append(prob_html)
+
+                html.append('    </div>')  # Close model-card
+
+        html.append('</div>')  # Close section
 
     # Signal Consensus
     if successful_models:
@@ -638,21 +1161,24 @@ def generate_html_report(results, csv_file, output_file):
 
     html.append("</div>")  # Close content div
 
-    # Disclaimer
-    html.append('<div class="disclaimer">')
-    html.append("<h2>DISCLAIMER</h2>")
-    html.append("<p>This report is generated by statistical models and is NOT financial advice.</p>")
-    html.append("<p>Past performance does not guarantee future results.</p>")
-    html.append("<p>Stock prices are inherently unpredictable and influenced by many factors not captured by these models.</p>")
-    html.append("<p>Always do your own research, understand the risks, and never invest more than you can afford to lose.</p>")
-    html.append('</div>')
+    html.append("""
+            <!-- Disclaimer -->
+            <div class="disclaimer">
+                <h3>⚠️ DISCLAIMER</h3>
+                <p>This report is generated by statistical models and is <strong>NOT financial advice</strong>.</p>
+                <p>Past performance does not guarantee future results.</p>
+                <p>Stock prices are inherently unpredictable and influenced by many factors not captured by these models.</p>
+                <p>Always do your own research, understand the risks, and never invest more than you can afford to lose.</p>
+            </div>
 
-    html.append(f"<p style='text-align: center; color: #7f8c8d; margin-top: 30px;'><em>Report generated by main.py on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</em></p>")
-
-    # Close HTML
-    html.append("</div>")  # Close container
-    html.append("</body>")
-    html.append("</html>")
+            <div class="footer">
+                <p>Report generated by <strong>Claude Code Stock Prediction System</strong></p>
+                <p>Generated on """ + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + """</p>
+            </div>
+        </div> <!-- Close content -->
+    </div> <!-- Close container -->
+</body>
+</html>""")
 
     # Write to file
     with open(output_file, 'w', encoding='utf-8') as f:
