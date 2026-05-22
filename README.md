@@ -1,6 +1,14 @@
 # Stock Market Entry Signal
 
-A tool to fetch and analyze stock market and cryptocurrency data with technical indicators for price prediction.
+Advanced multi-model stock price prediction system with probability analysis for swing trading.
+
+**Features:**
+- 🤖 4 Machine Learning Models (LSTM, XGBoost, LightGBM, RandomForest)
+- 🎯 Multi-Approach Win Probability Analysis (3 independent methods)
+- 📊 Beautiful HTML Dashboard Reports
+- 💹 5x Leverage Position Calculations for IQ Option
+- ⚡ Parallel Training with GPU Acceleration
+- 🔄 Walk-Forward Validation (RandomForest)
 
 ## Installation
 
@@ -65,12 +73,15 @@ python main.py --ticker BTC-USD --months 48
 
 This will:
 1. Fetch historical stock data (default: 48 months = 4 years)
-2. Train all 3 models in parallel (LSTM, XGBoost, LightGBM)
-3. Generate comparison report: `RESULT-{TICKER}-{DATE}.html`
+2. Train all 4 models in parallel (LSTM, XGBoost, LightGBM, RandomForest)
+3. Run multi-approach probability analysis for each model
+4. Generate beautiful HTML dashboard: `RESULT-{TICKER}-{DATE}.html`
 
 **Training Details:**
-- Train/Test Split: 90/10 (90% training, 10% testing)
+- LSTM, XGBoost, LightGBM: 90/10 split (90% training, 10% testing)
+- RandomForest: Walk-forward validation (5 folds, rolling windows)
 - With 48 months data: ~43 months training, ~5 months testing
+- Training time: 3-7 minutes (depending on GPU availability)
 
 ### Option 2: Manual Steps
 
@@ -447,6 +458,103 @@ python train_xgboost.py MSFT_daily_data_20260519.csv --n_estimators 1000 --learn
 - `xgboost_feature_importance.png`: Feature importance plot (shows what model focuses on)
 - `xgboost_predictions.png`: Actual vs predicted prices plot
 
+### Random Forest Model (Ensemble with Walk-Forward Validation)
+
+Train a Random Forest model with walk-forward validation:
+
+```bash
+# Basic usage (default parameters)
+python train_randomforest.py MSFT_daily_data_20260520.csv
+
+# Custom parameters
+python train_randomforest.py MSFT_daily_data_20260520.csv --n_estimators 1000 --max_depth 20 --max_features 40
+```
+
+**Parameters:**
+- `--n_estimators`: Number of trees in forest (default: 500)
+- `--max_depth`: Maximum tree depth (default: 15)
+- `--max_features`: Number of top features to use (default: 30)
+
+**Understanding Random Forest Parameters:**
+
+1. **N_estimators (Number of Trees)**
+   - How many decision trees to train independently
+   - `--n_estimators 500` means: build 500 trees, each on random subset of data
+   - **Too few (e.g., 50-100)**: High variance, unstable predictions
+   - **Too many (e.g., 2000+)**: Diminishing returns, slower inference
+   - **Recommended**: 500-1000 trees
+
+2. **Max Depth**
+   - Maximum depth of each decision tree
+   - `--max_depth 15` means: tree can have up to 15 levels
+   - **Shallow (e.g., 5-10)**: Simple patterns, may underfit
+   - **Deep (e.g., 20-30)**: Complex patterns, may overfit
+   - **Recommended**: 15-20 for financial data
+
+3. **Max Features**
+   - Number of top features to select (by correlation with target)
+   - `--max_features 30` means: use top 30 most correlated features
+   - This reduces noise and speeds up training
+   - **Fewer (e.g., 15-20)**: Faster training, less overfitting
+   - **More (e.g., 40-50)**: More information, potential overfitting
+   - **Recommended**: 25-35 features
+
+**Walk-Forward Validation:**
+
+Unlike simple train/test split, walk-forward validation simulates real trading:
+
+```
+Example with 1000 days, 5 folds:
+┌─────────────────────────────────────────────────────┐
+│ Fold 1: Train [1-600]    → Test [601-800]         │
+│ Fold 2: Train [1-800]    → Test [801-900]         │
+│ Fold 3: Train [1-900]    → Test [901-950]         │
+│ Fold 4: Train [1-950]    → Test [951-975]         │
+│ Fold 5: Train [1-975]    → Test [976-1000]        │
+└─────────────────────────────────────────────────────┘
+```
+
+**Benefits:**
+- Tests on truly unseen future data
+- No look-ahead bias
+- Mimics real trading conditions
+- More realistic performance estimates
+
+**How Random Forest Works for Stock Prediction:**
+
+1. **Bootstrap Aggregation (Bagging)**:
+   - Each tree trained on random sample of data (with replacement)
+   - Each tree sees different subset of features at each split
+   - Reduces overfitting through diversity
+
+2. **Feature Engineering**: Same as XGBoost/LightGBM:
+   - `Close_lag_1, Close_lag_2, ...`: Previous days' closing prices
+   - `Volume_lag_1, Volume_lag_2, ...`: Previous days' volumes
+   - `Price_change_1d, Price_change_5d, Price_change_10d`: Price changes
+   - `Volatility_5d, Volatility_10d`: Rolling volatility
+   - `MA_5, MA_10, MA_20`: Moving averages
+   - **Top 30 features selected by correlation**
+
+3. **Prediction**: Average of all tree predictions (regression)
+
+4. **Feature Importance**: Shows which features matter most (saved as plot)
+
+**Advantages of Random Forest:**
+- **Robust to overfitting**: Ensemble of many trees averages out errors
+- **Walk-forward validation**: Most realistic evaluation method
+- **No GPU required**: Efficiently uses all CPU cores
+- **Handles non-linear relationships**: Decision trees capture complex patterns
+- **Interpretable**: Can see which features are important
+- **Stable predictions**: Less sensitive to small data changes than single tree
+
+**Outputs:**
+- `randomforest_model.pkl`: Trained Random Forest model
+- `randomforest_scaler.pkl`: Feature scaler (for standardizing inputs)
+- `randomforest_features.txt`: List of all features used (including lag features)
+- `randomforest_model_info.txt`: Model performance metrics (with walk-forward results)
+- `randomforest_feature_importance.png`: Feature importance plot
+- `randomforest_predictions.png`: Actual vs predicted prices plot (last 100 test samples)
+
 ### Model Evaluation Metrics
 
 All models provide:
@@ -474,13 +582,16 @@ python fetch_stock_data.py MSFT
 # Step 2: Train LSTM model (deep learning - captures sequences)
 python train_lstm.py MSFT_daily_data_20260520.csv
 
-# Step 3: Train LightGBM model (recommended - fast, accurate)
+# Step 3: Train LightGBM model (fast, accurate gradient boosting)
 python train_lightgbm.py MSFT_daily_data_20260520.csv
 
 # Step 4: Train XGBoost model (alternative gradient boosting)
 python train_xgboost.py MSFT_daily_data_20260520.csv
 
-# Step 5: Compare all models - use main.py to get HTML report
+# Step 5: Train Random Forest model (ensemble with walk-forward validation)
+python train_randomforest.py MSFT_daily_data_20260520.csv
+
+# Step 6: Compare all models - use main.py to get HTML report
 python main.py MSFT_daily_data_20260520.csv
 ```
 
@@ -666,17 +777,54 @@ The probability analysis is automatically included in the HTML report generated 
 - Recommendation (TAKE TRADE / SKIP TRADE)
 - Individual method probabilities
 
-## Notes
+## 📋 Summary & Notes
 
-- All data is fetched with daily intervals (1 day per candle)
-- Default historical data: 48 months (4 years)
-- Cryptocurrency markets trade 24/7, so they may have more data points than stocks
-- Data is fetched from Yahoo Finance via yfinance library
-- LSTM models are better for capturing long-term dependencies in time series
-- LightGBM is recommended for tabular data (often faster and more accurate than XGBoost)
-- XGBoost and LightGBM are easier to interpret (feature importance plots)
-- Train/test split: 90/10 (with 48 months = ~43 months training, ~5 months testing)
-- LSTM ultra-simplified to 1 layer (50 units) with 40% dropout - fastest training, minimal overfitting
-- LightGBM uses leaf-wise tree growth (2-4x faster than XGBoost's level-wise)
-- All models support GPU acceleration for faster training
-- **Probability analysis runs automatically** and takes ~5-10 seconds per model
+### Model Comparison
+
+| Model | Type | Validation | Speed | GPU | Best For |
+|-------|------|------------|-------|-----|----------|
+| **LSTM** | Deep Learning | 90/10 Split | Slow | ✅ Yes | Sequential patterns, trends |
+| **XGBoost** | Gradient Boosting | 90/10 Split | Medium | ✅ Yes | Feature-rich data, interpretability |
+| **LightGBM** | Gradient Boosting | 90/10 Split | Fast | ✅ Yes | Large datasets, speed + accuracy |
+| **RandomForest** | Ensemble Trees | Walk-Forward (5 folds) | Medium | ❌ CPU | Robustness, realistic evaluation |
+
+### Key Features
+
+- ✅ **4 Models**: LSTM, XGBoost, LightGBM, RandomForest
+- ✅ **3 Probability Approaches**: Multi-day prediction, Monte Carlo, Historical patterns
+- ✅ **Beautiful HTML Reports**: Professional dashboard with cards, tables, and badges
+- ✅ **5x Leverage Calculations**: Ready for IQ Option auto-close settings
+- ✅ **Walk-Forward Validation**: RandomForest uses realistic backtesting
+- ✅ **Parallel Training**: All 4 models train simultaneously (3-7 minutes)
+- ✅ **GPU Acceleration**: LSTM, XGBoost, LightGBM support CUDA
+- ✅ **Feature Engineering**: 30+ lag features, volatility, moving averages
+
+### Data & Training
+
+- **Data Source**: Yahoo Finance via yfinance library
+- **Default History**: 48 months (4 years) of daily data
+- **Train/Test Split**: 
+  - LSTM, XGBoost, LightGBM: 90/10 split (~43 months train, ~5 months test)
+  - RandomForest: Walk-forward validation (5 rolling folds)
+- **Cryptocurrency**: 24/7 trading → more data points than stocks
+
+### Model Architecture
+
+- **LSTM**: 1 layer (50 units) + 40% dropout → ultra-fast, minimal overfitting
+- **XGBoost**: 1000 trees, depth 7, level-wise growth
+- **LightGBM**: 1000 trees, 31 leaves, leaf-wise growth (2-4x faster than XGBoost)
+- **RandomForest**: 500 trees, depth 15, top 30 features, walk-forward validation
+
+### Performance
+
+- **Training Time**: 3-7 minutes for all 4 models (with GPU)
+- **Probability Analysis**: Automatic, ~5-10 seconds per model
+- **Report Generation**: Beautiful HTML dashboard with all results
+
+### Trading Strategy
+
+- **Stop Loss/Take Profit**: Based on volatility (0.6× and 1.0× daily volatility)
+- **Optimized for**: 1-2 day swing trades with 5x leverage
+- **Win Probability**: Ensemble of 3 approaches (prediction + Monte Carlo + patterns)
+- **Minimum Threshold**: 60% probability to recommend trade
+- **Confidence Levels**: HIGH (≥75%), MEDIUM (65-75%), LOW (<65%)
