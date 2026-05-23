@@ -50,7 +50,7 @@ CONFIDENCE_MEDIUM = 65.0  # Between medium and high = MEDIUM confidence
 
 def predict_multi_day_path(model, scaler, df, feature_cols, current_price,
                            stop_loss, take_profit, n_days=PREDICTION_DAYS,
-                           model_type='gbm'):
+                           model_type='gbm', target_scaler=None, lookback=60):
     """
     Predict next N days sequentially and check if TP or SL is hit.
 
@@ -88,15 +88,17 @@ def predict_multi_day_path(model, scaler, df, feature_cols, current_price,
 
     for day in range(1, n_days + 1):
         if model_type == 'lstm':
-            # For LSTM, need sequence of recent prices
-            recent_data = df_sim[feature_cols].tail(60).values
+            recent_data = df_sim[feature_cols].tail(lookback).values
             recent_data_scaled = scaler.transform(recent_data)
-            X_input = recent_data_scaled.reshape(1, 60, len(feature_cols))
+            X_input = recent_data_scaled.reshape(1, lookback, len(feature_cols))
             pred_scaled = model.predict(X_input, verbose=0)[0][0]
-            # Inverse transform prediction
-            dummy = np.zeros((1, len(feature_cols)))
-            dummy[0, 0] = pred_scaled
-            pred_price = scaler.inverse_transform(dummy)[0, 0]
+            # Use target_scaler if provided (CNN-LSTM uses separate scaler_y)
+            if target_scaler is not None:
+                pred_price = target_scaler.inverse_transform([[pred_scaled]])[0][0]
+            else:
+                dummy = np.zeros((1, len(feature_cols)))
+                dummy[0, 0] = pred_scaled
+                pred_price = scaler.inverse_transform(dummy)[0, 0]
         else:
             # For GBM models (LightGBM/XGBoost)
             # Make sure all feature columns exist
@@ -174,38 +176,149 @@ def predict_multi_day_path(model, scaler, df, feature_cols, current_price,
 
 def recalculate_features(df, feature_cols):
     """
-    Recalculate technical indicators after adding new predicted price.
-    This ensures features stay consistent for multi-day prediction.
+    Recalculate all technical indicators after appending a new predicted row.
+    Handles both the original lag-feature set and the CNN-LSTM indicator set.
     """
-    # Recalculate price change features
-    if 'Price_change_1d' in feature_cols:
-        df['Price_change_1d'] = df['Close'].pct_change(1) * 100
-    if 'Price_change_5d' in feature_cols:
-        df['Price_change_5d'] = df['Close'].pct_change(5) * 100
-    if 'Price_change_10d' in feature_cols:
-        df['Price_change_10d'] = df['Close'].pct_change(10) * 100
+    c = df['Close']
 
-    # Volatility features
-    if 'Volatility_5d' in feature_cols:
-        df['Volatility_5d'] = df['Close'].rolling(window=5).std()
-    if 'Volatility_10d' in feature_cols:
-        df['Volatility_10d'] = df['Close'].rolling(window=10).std()
+    # --- Moving averages ---
+    for p, tag in [(5,'SMA_5'), (10,'SMA_10'), (20,'SMA_20'), (50,'SMA_50'),
+                   (100,'SMA_100'), (200,'SMA_200')]:
+        if tag in feature_cols:
+            df[tag] = c.rolling(p).mean()
+    for p, tag in [(9,'EMA_9'), (21,'EMA_21'), (50,'EMA_50'), (100,'EMA_100')]:
+        if tag in feature_cols:
+            df[tag] = c.ewm(span=p, min_periods=p).mean()
 
-    # Lag features for Close
+    # --- MA ratios ---
+    for p, tag in [(20,'Close_SMA20_ratio'), (50,'Close_SMA50_ratio'), (200,'Close_SMA200_ratio')]:
+        sma_tag = f'SMA_{p}'
+        if tag in feature_cols and sma_tag in df.columns:
+            df[tag] = (c - df[sma_tag]) / (df[sma_tag] + 1e-10)
+
+    # --- RSI ---
+    for p, tag in [(7,'RSI_7'), (14,'RSI_14'), (21,'RSI_21')]:
+        if tag in feature_cols:
+            delta = c.diff()
+            gain = delta.where(delta > 0, 0.0).ewm(com=p-1, min_periods=p).mean()
+            loss = (-delta.where(delta < 0, 0.0)).ewm(com=p-1, min_periods=p).mean()
+            df[tag] = 100 - (100 / (1 + gain / (loss + 1e-10)))
+
+    # --- MACD ---
+    if any(t in feature_cols for t in ['MACD_line', 'MACD_signal', 'MACD_hist']):
+        ema12 = c.ewm(span=12, min_periods=12).mean()
+        ema26 = c.ewm(span=26, min_periods=26).mean()
+        macd_line = ema12 - ema26
+        macd_sig  = macd_line.ewm(span=9, min_periods=9).mean()
+        if 'MACD_line'   in feature_cols: df['MACD_line']   = macd_line
+        if 'MACD_signal' in feature_cols: df['MACD_signal'] = macd_sig
+        if 'MACD_hist'   in feature_cols: df['MACD_hist']   = macd_line - macd_sig
+
+    # --- Bollinger Bands ---
+    bb_tags = ['BB_upper', 'BB_lower', 'BB_mid', 'BB_pct', 'BB_width']
+    if any(t in feature_cols for t in bb_tags):
+        bb_mid = c.rolling(20).mean()
+        bb_std = c.rolling(20).std()
+        bb_up  = bb_mid + 2 * bb_std
+        bb_lo  = bb_mid - 2 * bb_std
+        if 'BB_upper' in feature_cols: df['BB_upper'] = bb_up
+        if 'BB_lower' in feature_cols: df['BB_lower'] = bb_lo
+        if 'BB_mid'   in feature_cols: df['BB_mid']   = bb_mid
+        if 'BB_pct'   in feature_cols: df['BB_pct']   = (c - bb_lo) / (bb_up - bb_lo + 1e-10)
+        if 'BB_width' in feature_cols: df['BB_width'] = (bb_up - bb_lo) / (bb_mid + 1e-10)
+
+    # --- ATR ---
+    for p, tag in [(7,'ATR_7'), (14,'ATR_14')]:
+        if tag in feature_cols and 'High' in df.columns and 'Low' in df.columns:
+            high, low = df['High'], df['Low']
+            tr = pd.concat([high - low,
+                            (high - c.shift()).abs(),
+                            (low  - c.shift()).abs()], axis=1).max(axis=1)
+            df[tag] = tr.ewm(span=p, min_periods=p).mean()
+
+    # --- Stochastic ---
+    if 'STOCH_K' in feature_cols or 'STOCH_D' in feature_cols:
+        if 'High' in df.columns and 'Low' in df.columns:
+            low_min  = df['Low'].rolling(14).min()
+            high_max = df['High'].rolling(14).max()
+            k = 100 * (c - low_min) / (high_max - low_min + 1e-10)
+            if 'STOCH_K' in feature_cols: df['STOCH_K'] = k
+            if 'STOCH_D' in feature_cols: df['STOCH_D'] = k.rolling(3).mean()
+
+    # --- OBV ---
+    if 'OBV' in feature_cols and 'Volume' in df.columns:
+        direction = np.sign(c.diff()).fillna(0)
+        obv_raw = (direction * df['Volume']).cumsum()
+        df['OBV'] = np.log1p(obv_raw.abs()) * np.sign(obv_raw)
+
+    # --- CCI ---
+    for p, tag in [(14,'CCI_14'), (20,'CCI_20')]:
+        if tag in feature_cols and 'High' in df.columns and 'Low' in df.columns:
+            tp  = (df['High'] + df['Low'] + c) / 3
+            ma  = tp.rolling(p).mean()
+            mad = tp.rolling(p).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+            df[tag] = (tp - ma) / (0.015 * mad + 1e-10)
+
+    # --- Williams %R ---
+    if 'WILLR_14' in feature_cols and 'High' in df.columns and 'Low' in df.columns:
+        df['WILLR_14'] = -100 * (df['High'].rolling(14).max() - c) / \
+                         (df['High'].rolling(14).max() - df['Low'].rolling(14).min() + 1e-10)
+
+    # --- ROC ---
+    for p, tag in [(1,'ROC_1'), (5,'ROC_5'), (10,'ROC_10')]:
+        if tag in feature_cols:
+            df[tag] = c.pct_change(p) * 100
+
+    # --- Momentum ---
+    for p, tag in [(5,'MOM_5'), (10,'MOM_10')]:
+        if tag in feature_cols:
+            df[tag] = c - c.shift(p)
+
+    # --- Volume features ---
+    if 'Volume' in df.columns:
+        if 'Volume_log' in feature_cols:
+            df['Volume_log'] = np.log1p(df['Volume'])
+        if 'Volume_MA20_ratio' in feature_cols:
+            df['Volume_MA20_ratio'] = df['Volume'] / (df['Volume'].rolling(20).mean() + 1e-10)
+
+    # --- Price changes ---
+    for p, tag in [(1,'Price_change_1d'), (3,'Price_change_3d'), (5,'Price_change_5d'),
+                   (10,'Price_change_10d')]:
+        if tag in feature_cols:
+            df[tag] = c.pct_change(p) * 100
+
+    # --- Volatility ---
+    ret = c.pct_change()
+    for p, tag in [(5,'Volatility_5d'), (10,'Volatility_10d'), (20,'Volatility_20d'),
+                   (30,'Volatility_30d')]:
+        if tag in feature_cols:
+            df[tag] = ret.rolling(p).std() * 100
+
+    # --- Heavy-model derived features ---
+    if 'RSI14_slope_3d' in feature_cols and 'RSI_14' in df.columns:
+        df['RSI14_slope_3d'] = df['RSI_14'].diff(3)
+    if 'MACD_accel' in feature_cols and 'MACD_hist' in df.columns:
+        df['MACD_accel'] = df['MACD_hist'].diff(1)
+    if 'BB_squeeze' in feature_cols and 'BB_width' in df.columns:
+        bb_width_ma = df['BB_width'].rolling(20).mean()
+        df['BB_squeeze'] = df['BB_width'] / (bb_width_ma + 1e-10)
+
+    # --- High/Low range ---
+    if 'HL_range_pct' in feature_cols and 'High' in df.columns and 'Low' in df.columns:
+        df['HL_range_pct'] = (df['High'] - df['Low']) / (c + 1e-10) * 100
+    if 'HL_vs_ATR14' in feature_cols and 'ATR_14' in df.columns:
+        df['HL_vs_ATR14'] = (df['High'] - df['Low']) / (df['ATR_14'] + 1e-10)
+
+    # --- Legacy lag features (XGBoost / LightGBM / RandomForest) ---
     for lag in [1, 2, 3, 5, 10]:
-        col_name = f'Close_lag_{lag}'
-        if col_name in feature_cols:
-            df[col_name] = df['Close'].shift(lag)
+        tag = f'Close_lag_{lag}'
+        if tag in feature_cols:
+            df[tag] = c.shift(lag)
+        tag = f'Volume_lag_{lag}'
+        if tag in feature_cols and 'Volume' in df.columns:
+            df[tag] = df['Volume'].shift(lag)
 
-    # Lag features for Volume
-    for lag in [1, 2, 3, 5, 10]:
-        col_name = f'Volume_lag_{lag}'
-        if col_name in feature_cols:
-            df[col_name] = df['Volume'].shift(lag)
-
-    # Fill NaN with forward fill then backward fill
     df = df.ffill().bfill()
-
     return df
 
 
