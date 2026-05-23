@@ -546,7 +546,10 @@ def train_lstm_model(
         verbose=1,
     )
 
-    model = keras.models.load_model('best_lstm_model.keras')
+    model = keras.models.load_model(
+        'best_lstm_model.keras',
+        custom_objects={'TemporalAttention': TemporalAttention}
+    )
 
     # ---- Predict ----
     print("\nMaking predictions...")
