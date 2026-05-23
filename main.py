@@ -1155,7 +1155,8 @@ def generate_html_report(results, csv_file, output_file):
         html.append("5. **Combine with fundamentals:** Models only use price data, add fundamental analysis\n")
 
     html.append("### Model Comparison:\n")
-    html.append("- **LSTM:** Deep learning, captures sequences, needs lots of data")
+    html.append("- **LSTM:** CNN-1D feature extraction + stacked LSTM + temporal attention")
+    html.append("- **TFT:** CNN-1D + Gated Residual Networks + LSTM encoder + Multi-Head Attention")
     html.append("- **XGBoost:** Gradient boosting, good with features, interpretable")
     html.append("- **LightGBM:** Like XGBoost but faster, often more accurate")
     html.append("- **RandomForest:** Ensemble of decision trees, walk-forward validation, robust\n")
@@ -1247,11 +1248,12 @@ Default: 48 months (4 years) of historical data
     print(f"Output report: {output_file}")
     print("="*60)
     print("\nTraining models in parallel...")
-    print("This will take 3-7 minutes depending on data size and GPU availability\n")
+    print("This will take 5-15 minutes depending on data size and GPU availability\n")
 
     # Define models to run
     models = [
         ('LSTM', 'train_lstm.py'),
+        ('TFT', 'train_tft.py'),
         ('XGBoost', 'train_xgboost.py'),
         ('LightGBM', 'train_lightgbm.py'),
         ('RandomForest', 'train_randomforest.py')
@@ -1260,7 +1262,7 @@ Default: 48 months (4 years) of historical data
     # Run all models in parallel using ThreadPoolExecutor
     results = []
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         # Submit all tasks
         future_to_model = {
             executor.submit(run_model, name, script, csv_file): name
@@ -1299,7 +1301,7 @@ Default: 48 months (4 years) of historical data
     print(f"\nView the report: {output_file}")
     print("\nGenerated files:")
     print("  - Plots: *_predictions.png, *_feature_importance.png")
-    print("  - Models: *.pkl, *.keras")
+    print("  - Models: *.pkl, *.keras  (includes best_tft_model.keras)")
     print("  - Report: " + output_file)
     print("\n")
 

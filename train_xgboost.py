@@ -259,52 +259,43 @@ def train_xgboost_model(csv_file, n_estimators=1000, learning_rate=0.01, max_dep
 
     # Try GPU first, fallback to CPU if not available
     # GPU can speed up training 2-4x for large datasets
-    try:
-        model = xgb.XGBRegressor(
-            # === Core Parameters ===
-            n_estimators=n_estimators,  # Number of trees (default: 1000)
-                                        # More trees = more learning, but slower training
-            learning_rate=learning_rate,  # How much each tree contributes (default: 0.01)
-                                          # Lower = more trees needed, but better generalization
-            max_depth=max_depth,  # Maximum depth of each tree (default: 7)
-                                  # Deeper = more complex patterns, but risk overfitting
+    _using_gpu = False
 
-            # === Regularization Parameters (prevent overfitting) ===
-            subsample=0.8,  # Use 80% of data for each tree (random sampling)
-                            # Adds randomness -> reduces overfitting
-            colsample_bytree=0.8,  # Use 80% of features for each tree
-                                   # Prevents model from relying too heavily on any single feature
-
-            # === Other Parameters ===
-            random_state=42,  # Seed for reproducibility (same results every run)
-            tree_method='hist',  # Histogram-based algorithm (faster than exact)
-            device='cuda'  # Use GPU for training (IMPORTANT: This enables GPU!)
-        )
-        print("Using GPU acceleration (CUDA)")
-    except Exception as e:
-        # If GPU fails (no CUDA, drivers missing, etc.), fall back to CPU
-        print(f"GPU not available, using CPU: {e}")
-        model = xgb.XGBRegressor(
+    def _make_xgb_model(use_gpu):
+        params = dict(
             n_estimators=n_estimators,
             learning_rate=learning_rate,
             max_depth=max_depth,
             subsample=0.8,
             colsample_bytree=0.8,
             random_state=42,
-            tree_method='hist'
-            # No device='cuda' - will use CPU
+            tree_method='hist',
         )
+        if use_gpu:
+            params['device'] = 'cuda'
+        return xgb.XGBRegressor(**params)
 
     # Train model
     # XGBoost builds trees sequentially: Tree1 -> Tree2 -> Tree3 -> ...
     # Each new tree learns to correct the errors of all previous trees
     print("\nTraining XGBoost model...")
-    model.fit(
-        X_train_scaled, y_train,  # Training data (features and targets)
-        eval_set=[(X_train_scaled, y_train), (X_test_scaled, y_test)],  # Track performance on both sets
-        verbose=50  # Print progress every 50 trees
-        # XGBoost tracks validation loss and can early-stop if performance stops improving
-    )
+    try:
+        model = _make_xgb_model(use_gpu=True)
+        model.fit(
+            X_train_scaled, y_train,
+            eval_set=[(X_train_scaled, y_train), (X_test_scaled, y_test)],
+            verbose=50,
+        )
+        _using_gpu = True
+        print("Using GPU acceleration (CUDA)")
+    except Exception as e:
+        print(f"GPU not available, falling back to CPU: {e}")
+        model = _make_xgb_model(use_gpu=False)
+        model.fit(
+            X_train_scaled, y_train,
+            eval_set=[(X_train_scaled, y_train), (X_test_scaled, y_test)],
+            verbose=50,
+        )
 
     # Make predictions
     print("\nMaking predictions...")
@@ -535,7 +526,7 @@ def train_xgboost_model(csv_file, n_estimators=1000, learning_rate=0.01, max_dep
     ticker = os.path.basename(csv_file).split('_')[0]
     model_info = {
         'ticker': ticker,
-        'model_type': 'XGBoost',
+        'model_type': f'XGBoost ({"GPU" if _using_gpu else "CPU"})',
         'n_features': len(all_features),
         'train_size': len(X_train),
         'test_size': len(X_test),

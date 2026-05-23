@@ -1,54 +1,48 @@
 """
-LSTM Stock Price Prediction Model (Keras with PyTorch Backend + GPU)
+CNN-1D + LSTM Stock Price Prediction Model
 
-This script trains an LSTM (Long Short-Term Memory) neural network to predict stock prices.
-LSTM is a type of Recurrent Neural Network (RNN) that can learn patterns in sequences of data.
+Architecture:
+  1. Technical Indicator Engine  — 50+ signals (RSI, MACD, MA, BB, ATR, Stoch, OBV, CCI, etc.)
+  2. CNN-1D Feature Extractor    — learns local patterns across indicator channels
+  3. LSTM Sequence Learner       — learns temporal dependencies in extracted features
+  4. Dense Head                  — outputs tomorrow's closing price
 
-Key Concepts:
-- LSTM: Remembers long-term patterns in time series (unlike simple RNNs that forget)
-- Sequential Data: Each data point depends on previous points (time matters!)
-- Backpropagation Through Time: LSTM learns by looking at sequences, not individual points
-- GPU Acceleration: Uses PyTorch backend with CUDA for 5-10x faster training
-
-Why LSTM for stocks?
-- Stock prices are sequential - today's price depends on yesterday's, last week's, etc.
-- LSTM can "remember" important patterns from days/weeks ago
-- Can learn complex non-linear relationships between features
+Why CNN before LSTM?
+  - CNN: detects short-range cross-indicator patterns (e.g. RSI divergence + BB squeeze)
+  - LSTM: remembers how those patterns evolve over weeks/months
+  - Together they separate "what is the pattern NOW" from "how has it been trending"
 """
 
-# === Environment Setup ===
-# CRITICAL: Set PyTorch as backend BEFORE importing Keras!
-# This must be the very first thing in the script
 import os
-os.environ['KERAS_BACKEND'] = 'torch'  # Use PyTorch instead of TensorFlow
-# This enables GPU acceleration on Windows!
+os.environ['KERAS_BACKEND'] = 'torch'
 
-# Disable warnings for cleaner output
 import warnings
 warnings.filterwarnings('ignore')
 
-# === Imports ===
-import pandas as pd  # Data manipulation
-import numpy as np  # Numerical operations
-from sklearn.preprocessing import MinMaxScaler  # Scale data to 0-1 range
-from sklearn.metrics import mean_absolute_error, mean_squared_error, accuracy_score, precision_score, recall_score, f1_score  # Evaluation
-import keras  # High-level neural network API
-from keras.models import Sequential  # Linear stack of layers
-from keras.layers import LSTM, Dense, Dropout  # Neural network layers
-from keras.callbacks import EarlyStopping, ModelCheckpoint  # Training callbacks
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import (mean_absolute_error, mean_squared_error,
+                             accuracy_score, precision_score, recall_score, f1_score)
+import keras
+from keras.models import Model
+from keras.layers import (Input, Conv1D, MaxPooling1D, LSTM, Dense,
+                          Dropout, BatchNormalization, Flatten, Concatenate, Layer)
+import keras.backend as K
+from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-import matplotlib.pyplot as plt  # Plotting
-import argparse  # Command-line arguments
-import torch  # PyTorch (for GPU check)
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import argparse
+import torch
 from datetime import datetime
-import logging  # Suppress matplotlib logging
-logging.getLogger('matplotlib').setLevel(logging.ERROR)  # Suppress matplotlib warnings
-logging.getLogger('PIL').setLevel(logging.ERROR)  # Suppress PIL warnings
-logging.getLogger('keras').setLevel(logging.ERROR)  # Suppress Keras warnings
-logging.getLogger('torch').setLevel(logging.ERROR)  # Suppress PyTorch warnings
+import logging
 
-# Import trade probability analyzer
+logging.getLogger('matplotlib').setLevel(logging.ERROR)
+logging.getLogger('PIL').setLevel(logging.ERROR)
+logging.getLogger('keras').setLevel(logging.ERROR)
+logging.getLogger('torch').setLevel(logging.ERROR)
+
 from trade_probability_analyzer import (
     predict_multi_day_path,
     monte_carlo_simulation,
@@ -57,480 +51,586 @@ from trade_probability_analyzer import (
     format_analysis_report
 )
 
-# Print backend info
 print(f"Keras backend: {keras.backend.backend()}")
 print(f"PyTorch CUDA available: {torch.cuda.is_available()}")
 if torch.cuda.is_available():
     print(f"GPU: {torch.cuda.get_device_name(0)}")
 
+_device = "GPU" if torch.cuda.is_available() else "CPU"
+
+
+# ============================================================================
+# TECHNICAL INDICATOR COMPUTATION
+# ============================================================================
+
+def compute_rsi(series, period):
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0.0).ewm(com=period - 1, min_periods=period).mean()
+    loss = (-delta.where(delta < 0, 0.0)).ewm(com=period - 1, min_periods=period).mean()
+    rs = gain / (loss + 1e-10)
+    return 100 - (100 / (1 + rs))
+
+
+def compute_atr(df, period):
+    high, low, close = df['High'], df['Low'], df['Close']
+    tr = pd.concat([
+        high - low,
+        (high - close.shift()).abs(),
+        (low - close.shift()).abs()
+    ], axis=1).max(axis=1)
+    return tr.ewm(span=period, min_periods=period).mean()
+
+
+def compute_stochastic(df, k_period=14, d_period=3):
+    low_min = df['Low'].rolling(k_period).min()
+    high_max = df['High'].rolling(k_period).max()
+    k = 100 * (df['Close'] - low_min) / (high_max - low_min + 1e-10)
+    d = k.rolling(d_period).mean()
+    return k, d
+
+
+def compute_cci(df, period):
+    tp = (df['High'] + df['Low'] + df['Close']) / 3
+    ma = tp.rolling(period).mean()
+    mad = tp.rolling(period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    return (tp - ma) / (0.015 * mad + 1e-10)
+
+
+def compute_obv(df):
+    direction = np.sign(df['Close'].diff()).fillna(0)
+    return (direction * df['Volume']).cumsum()
+
+
+def compute_williams_r(df, period=14):
+    high_max = df['High'].rolling(period).max()
+    low_min = df['Low'].rolling(period).min()
+    return -100 * (high_max - df['Close']) / (high_max - low_min + 1e-10)
+
+
+def compute_technical_indicators(df):
+    """
+    Compute 50+ technical indicators and append them to df.
+
+    Indicator groups:
+      - Moving Averages   : SMA 5/10/20/50/100/200, EMA 9/21/50/100
+      - MA Ratios         : Close / SMAx normalised
+      - RSI               : periods 7, 14, 21
+      - MACD              : fast 12 / slow 26 / signal 9
+      - Bollinger Bands   : 20-period, ±2 std  (+%B and bandwidth)
+      - ATR               : periods 7, 14
+      - Stochastic        : %K(14,3), %D
+      - OBV               : on-balance volume
+      - CCI               : periods 14, 20
+      - Williams %R       : period 14
+      - Rate of Change    : 1, 5, 10 days
+      - Momentum          : 5, 10 days
+      - Volume features   : log-volume, volume/SMA20-ratio
+      - Price changes     : 1d, 3d, 5d % returns
+      - Volatility        : rolling std 5d, 10d, 20d
+      - High/Low range    : daily range %, range vs ATR
+      - Price vs MA flags : normalised distance to SMA20 / SMA50 / SMA200
+    """
+    out = df.copy()
+    c = out['Close']
+
+    # --- Moving averages ---
+    for p in [5, 10, 20, 50, 100, 200]:
+        out[f'SMA_{p}'] = c.rolling(p).mean()
+    for p in [9, 21, 50, 100]:
+        out[f'EMA_{p}'] = c.ewm(span=p, min_periods=p).mean()
+
+    # --- Price-to-MA ratios ---
+    for p in [20, 50, 200]:
+        ma = out[f'SMA_{p}']
+        out[f'Close_SMA{p}_ratio'] = (c - ma) / (ma + 1e-10)
+
+    # --- RSI ---
+    for p in [7, 14, 21]:
+        out[f'RSI_{p}'] = compute_rsi(c, p)
+
+    # --- MACD ---
+    ema12 = c.ewm(span=12, min_periods=12).mean()
+    ema26 = c.ewm(span=26, min_periods=26).mean()
+    out['MACD_line']   = ema12 - ema26
+    out['MACD_signal'] = out['MACD_line'].ewm(span=9, min_periods=9).mean()
+    out['MACD_hist']   = out['MACD_line'] - out['MACD_signal']
+
+    # --- Bollinger Bands (20-period, 2 std) ---
+    bb_mid   = c.rolling(20).mean()
+    bb_std   = c.rolling(20).std()
+    out['BB_upper']  = bb_mid + 2 * bb_std
+    out['BB_lower']  = bb_mid - 2 * bb_std
+    out['BB_mid']    = bb_mid
+    out['BB_pct']    = (c - out['BB_lower']) / (out['BB_upper'] - out['BB_lower'] + 1e-10)
+    out['BB_width']  = (out['BB_upper'] - out['BB_lower']) / (bb_mid + 1e-10)
+
+    # --- ATR ---
+    for p in [7, 14]:
+        out[f'ATR_{p}'] = compute_atr(out, p)
+
+    # --- Stochastic ---
+    out['STOCH_K'], out['STOCH_D'] = compute_stochastic(out, 14, 3)
+
+    # --- OBV (log-scaled) ---
+    out['OBV'] = np.log1p(compute_obv(out).abs()) * np.sign(compute_obv(out))
+
+    # --- CCI ---
+    for p in [14, 20]:
+        out[f'CCI_{p}'] = compute_cci(out, p)
+
+    # --- Williams %R ---
+    out['WILLR_14'] = compute_williams_r(out, 14)
+
+    # --- Rate of Change ---
+    for p in [1, 5, 10]:
+        out[f'ROC_{p}'] = c.pct_change(p) * 100
+
+    # --- Momentum ---
+    for p in [5, 10]:
+        out[f'MOM_{p}'] = c - c.shift(p)
+
+    # --- Volume features ---
+    vol = out['Volume']
+    out['Volume_log']      = np.log1p(vol)
+    out['Volume_MA20_ratio'] = vol / (vol.rolling(20).mean() + 1e-10)
+
+    # --- Price changes ---
+    out['Price_change_1d'] = c.pct_change(1) * 100
+    out['Price_change_3d'] = c.pct_change(3) * 100
+    out['Price_change_5d'] = c.pct_change(5) * 100
+
+    # --- Volatility ---
+    ret = c.pct_change()
+    for p in [5, 10, 20]:
+        out[f'Volatility_{p}d'] = ret.rolling(p).std() * 100
+
+    # --- Daily high/low range ---
+    out['HL_range_pct'] = (out['High'] - out['Low']) / (c + 1e-10) * 100
+    out['HL_vs_ATR14']  = (out['High'] - out['Low']) / (out['ATR_14'] + 1e-10)
+
+    return out
+
+
+FEATURE_COLS = [
+    # Raw price & volume
+    'Open', 'High', 'Low', 'Close', 'Volume',
+    # Moving averages
+    'SMA_5', 'SMA_10', 'SMA_20', 'SMA_50', 'SMA_100', 'SMA_200',
+    'EMA_9', 'EMA_21', 'EMA_50', 'EMA_100',
+    # MA ratios
+    'Close_SMA20_ratio', 'Close_SMA50_ratio', 'Close_SMA200_ratio',
+    # RSI
+    'RSI_7', 'RSI_14', 'RSI_21',
+    # MACD
+    'MACD_line', 'MACD_signal', 'MACD_hist',
+    # Bollinger
+    'BB_upper', 'BB_lower', 'BB_mid', 'BB_pct', 'BB_width',
+    # ATR
+    'ATR_7', 'ATR_14',
+    # Stochastic
+    'STOCH_K', 'STOCH_D',
+    # OBV
+    'OBV',
+    # CCI
+    'CCI_14', 'CCI_20',
+    # Williams %R
+    'WILLR_14',
+    # ROC
+    'ROC_1', 'ROC_5', 'ROC_10',
+    # Momentum
+    'MOM_5', 'MOM_10',
+    # Volume
+    'Volume_log', 'Volume_MA20_ratio',
+    # Price changes
+    'Price_change_1d', 'Price_change_3d', 'Price_change_5d',
+    # Volatility
+    'Volatility_5d', 'Volatility_10d', 'Volatility_20d',
+    # Range
+    'HL_range_pct', 'HL_vs_ATR14',
+]
+
+
+# ============================================================================
+# DATA LOADING & PREPARATION
+# ============================================================================
+
 def load_and_prepare_data(csv_file):
-    """
-    Load and clean stock data from CSV
-
-    Args:
-        csv_file (str): Path to CSV with stock data
-
-    Returns:
-        df (DataFrame): Cleaned data
-        feature_cols (list): List of feature column names
-
-    What this does:
-    - Loads CSV file with stock prices and technical indicators
-    - Removes rows with missing values (NaN)
-    - Selects relevant features for the LSTM model
-    """
     print(f"Loading data from {csv_file}...")
     df = pd.read_csv(csv_file)
 
-    # Select ONLY OHLCV features for training
-    # Technical indicators (MA, RSI, MACD, etc.) are kept in CSV for trading signals,
-    # but NOT used for model training
-    feature_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+    required = ['Open', 'High', 'Low', 'Close', 'Volume']
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
 
-    # Verify all required columns exist
-    missing_cols = [col for col in feature_cols if col not in df.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns: {missing_cols}")
+    print("Computing technical indicators...")
+    df = compute_technical_indicators(df)
+    df = df.dropna().reset_index(drop=True)
 
-    print(f"Using features: {feature_cols}")
-    print(f"Total records: {len(df)} (no NaN removal needed for OHLCV)")
+    print(f"Records after indicator computation: {len(df)}")
+    print(f"Feature count: {len(FEATURE_COLS)}")
 
-    return df, feature_cols
+    return df, FEATURE_COLS
 
-def prepare_data_for_lstm(df, feature_cols):
-    """
-    Prepare data for LSTM training - keep only necessary columns
 
-    Args:
-        df (DataFrame): Full dataframe with all columns
-        feature_cols (list): Feature columns to use (OHLCV)
-
-    Returns:
-        df_clean (DataFrame): Dataframe with only Date + features
-    """
-    # Only keep Date + feature columns to avoid NaN from unused technical indicators
-    keep_cols = ['Date'] + feature_cols
-    df_clean = df[keep_cols].copy()
-    print(f"Using columns for LSTM: {df_clean.columns.tolist()}")
-    return df_clean
-
-def create_sequences(data, target, lookback=60):
-    """
-    Create sequences for LSTM training
-
-    LSTM needs sequences, not individual data points!
-    This function transforms flat data into sequences.
-
-    Args:
-        data (array): Feature data (scaled)
-        target (array): Target values (scaled prices)
-        lookback (int): How many time steps to look back (default: 60 days)
-
-    Returns:
-        X (array): Sequences of shape (samples, lookback, features)
-        y (array): Target values (next day's price)
-
-    Example with lookback=3:
-    Input data: [Day1, Day2, Day3, Day4, Day5, ...]
-
-    Sequences created:
-    X[0] = [Day1, Day2, Day3] -> y[0] = Day4
-    X[1] = [Day2, Day3, Day4] -> y[1] = Day5
-    X[2] = [Day3, Day4, Day5] -> y[2] = Day6
-    ...
-
-    The LSTM sees 60 days of history and predicts day 61!
-    """
-    X, y = [], []
-    for i in range(lookback, len(data)):
-        # Take a slice of 'lookback' days as input
-        X.append(data[i-lookback:i])  # Days (i-60) to (i-1)
-        # The target is the next day's price
-        y.append(target[i])  # Day i
-    return np.array(X), np.array(y)
-
-def split_train_test(df, feature_cols, train_ratio=9/10):
-    """
-    Split data chronologically into train and test sets
-
-    CRITICAL: For time series, we MUST preserve time order!
-    - Training data: Past (first 90%)
-    - Test data: Future (last 10%)
-
-    Random splitting would leak future information into training!
-
-    Args:
-        df (DataFrame): Input data
-        feature_cols (list): Feature column names
-        train_ratio (float): Proportion for training (9/10 = 90%)
-
-    Returns:
-        train_df, test_df: Chronologically split dataframes
-    """
+def split_train_test(df, train_ratio=9/10):
     split_idx = int(len(df) * train_ratio)
-
-    # Chronological split - do NOT shuffle!
-    train_df = df[:split_idx]  # First 90%
-    test_df = df[split_idx:]   # Last 10%
-
+    train_df = df[:split_idx]
+    test_df  = df[split_idx:]
     print(f"\nData split:")
-    print(f"Training set: {len(train_df)} records ({train_df['Date'].min()} to {train_df['Date'].max()})")
-    print(f"Test set: {len(test_df)} records ({test_df['Date'].min()} to {test_df['Date'].max()})")
-
+    print(f"  Train: {len(train_df)} records  ({train_df['Date'].min()} → {train_df['Date'].max()})")
+    print(f"  Test:  {len(test_df)} records  ({test_df['Date'].min()} → {test_df['Date'].max()})")
     return train_df, test_df
 
-def build_lstm_model(input_shape):
+
+def create_sequences(X, y, lookback=60):
+    Xs, ys = [], []
+    for i in range(lookback, len(X)):
+        Xs.append(X[i - lookback:i])
+        ys.append(y[i])
+    return np.array(Xs), np.array(ys)
+
+
+# ============================================================================
+# TEMPORAL ATTENTION LAYER
+# ============================================================================
+
+class TemporalAttention(Layer):
     """
-    Build LSTM neural network architecture (ULTRA-SIMPLIFIED)
+    Soft self-attention over the time axis of an LSTM output sequence.
 
-    Architecture:
-    Input -> LSTM(50) -> Dropout(0.4) -> Dense(1)
+    Given LSTM output  H  of shape (batch, timesteps, units), the layer
+    learns a scalar importance weight for each timestep, then returns the
+    weighted sum — a single context vector of shape (batch, units).
 
-    Args:
-        input_shape (tuple): (lookback, num_features) e.g., (60, 5)
+    Why this helps:
+      Not every day in the 60-day lookback window matters equally.
+      A breakout three weeks ago might be far more predictive than yesterday's
+      noise.  Attention lets the model assign high weight to the days that
+      carry the most signal, ignoring the rest.
 
-    Returns:
-        model: Compiled Keras model
-
-    Layer Explanation:
-    1. LSTM(50, return_sequences=False): Single LSTM layer with 50 memory units
-       - Only 50 units (vs previous 64->32 = 2 layers)
-       - return_sequences=False: Output only final state (no sequence passing)
-       - Learns patterns from sequences and outputs single representation
-       - Minimal complexity to prevent overfitting
-
-    2. Dropout(0.4): Randomly drops 40% of connections during training
-       - Increased to 40% for maximum regularization
-       - Prevents overfitting on noisy financial data
-       - Forces model to learn only robust patterns
-
-    3. Dense(1): Output layer
-       - Single neuron = single prediction (tomorrow's price)
-       - No activation = linear output (can be any price value)
-       - Direct connection from LSTM to prediction
-
-    Why this ultra-simple architecture?
-    - 1 LSTM layer instead of 2 or 3: Fastest training, least overfitting
-    - Only 50 units: ~15K parameters (vs ~30K with 2 layers, ~130K with 3 layers)
-    - 40% dropout: Maximum regularization for financial data
-    - No stacked layers: Simplest possible LSTM model that still works
-    - Best for noisy data: Financial prices are mostly unpredictable (random walk)
-    - Trains in <1 minute: Fast experimentation
-
-    Benefits:
-    - 5x faster training than 3-layer model
-    - Less prone to overfitting
-    - Good baseline - if this works, more complex models might not help
+    Maths:
+      e_t = tanh(W · h_t + b)   [score for each timestep]
+      a_t = softmax(e_t)         [normalised attention weights]
+      c   = Σ a_t · h_t          [context vector]
     """
-    model = Sequential([
-        # Single LSTM layer
-        LSTM(50, return_sequences=False, input_shape=input_shape),
-        Dropout(0.4),  # Strong regularization
 
-        # Output layer
-        Dense(1)  # Single output = predicted price
-    ])
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
-    # Compile model - configure training process
+    def build(self, input_shape):
+        # input_shape = (batch, timesteps, units)
+        units = input_shape[-1]
+        self.W = self.add_weight(name='attn_W', shape=(units, 1),
+                                 initializer='glorot_uniform', trainable=True)
+        self.b = self.add_weight(name='attn_b', shape=(1,),
+                                 initializer='zeros', trainable=True)
+        super().build(input_shape)
+
+    def call(self, inputs):
+        # inputs: (batch, timesteps, units)
+        score = K.tanh(K.dot(inputs, self.W) + self.b)   # (batch, timesteps, 1)
+        score = K.squeeze(score, axis=-1)                  # (batch, timesteps)
+        weights = K.softmax(score)                         # (batch, timesteps)
+        weights = K.expand_dims(weights, axis=-1)          # (batch, timesteps, 1)
+        context = K.sum(inputs * weights, axis=1)          # (batch, units)
+        return context
+
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0], input_shape[-1])
+
+    def get_config(self):
+        return super().get_config()
+
+
+# ============================================================================
+# CNN-1D + LSTM MODEL
+# ============================================================================
+
+def build_cnn_lstm_model(
+    input_shape,
+    # CNN block 1
+    cnn1_filters=64,
+    cnn1_kernel=3,
+    # CNN block 2  (wider by default — more cross-indicator pattern capacity)
+    cnn2_filters=256,
+    cnn2_kernel=5,
+    # CNN block 3
+    cnn3_filters=64,
+    cnn3_kernel=3,
+    pool_size=2,
+    cnn_dropout=0.25,
+    # LSTM
+    lstm1_units=128,
+    lstm2_units=64,
+    lstm_dropout=0.3,
+    lstm_recurrent_dropout=0.0,
+    # Dense head
+    dense_units=32,
+    dense_dropout=0.2,
+):
+    """
+    CNN-1D + stacked-LSTM + Temporal Attention hybrid.
+
+    CNN stack:
+      Block 1: Conv1D(cnn1_filters, cnn1_kernel, relu, same) + BN
+      Block 2: Conv1D(cnn2_filters, cnn2_kernel, relu, same) + BN + MaxPool
+               cnn2_filters=256 gives broader cross-indicator pattern capacity
+      Block 3: Conv1D(cnn3_filters, cnn3_kernel, relu, same) + BN + Dropout
+
+    LSTM stack:
+      LSTM(lstm1_units, return_sequences=True)  + Dropout
+      LSTM(lstm2_units, return_sequences=True)  + Dropout   ← feeds attention
+
+    Attention:
+      TemporalAttention — learns a soft weight per timestep, collapses the
+      sequence to a single context vector.  The model decides which days in the
+      lookback window matter most for tomorrow's prediction.
+
+    Head:
+      Dense(dense_units, relu) + Dropout + Dense(1)
+    """
+    inp = Input(shape=input_shape)                         # (lookback, n_features)
+
+    # --- CNN block 1 ---
+    x = Conv1D(cnn1_filters, cnn1_kernel, activation='relu', padding='same')(inp)
+    x = BatchNormalization()(x)
+
+    # --- CNN block 2 (wider filters for richer cross-indicator patterns) ---
+    x = Conv1D(cnn2_filters, cnn2_kernel, activation='relu', padding='same')(x)
+    x = BatchNormalization()(x)
+    x = MaxPooling1D(pool_size=pool_size)(x)
+
+    # --- CNN block 3 ---
+    x = Conv1D(cnn3_filters, cnn3_kernel, activation='relu', padding='same')(x)
+    x = BatchNormalization()(x)
+    x = Dropout(cnn_dropout)(x)
+
+    # --- LSTM stack (both return sequences so attention sees all timesteps) ---
+    x = LSTM(lstm1_units, return_sequences=True,
+             recurrent_dropout=lstm_recurrent_dropout)(x)
+    x = Dropout(lstm_dropout)(x)
+
+    x = LSTM(lstm2_units, return_sequences=True,
+             recurrent_dropout=lstm_recurrent_dropout)(x)
+    x = Dropout(lstm_dropout)(x)
+
+    # --- Temporal Attention (collapses timesteps → context vector) ---
+    x = TemporalAttention(name='temporal_attention')(x)    # (batch, lstm2_units)
+
+    # --- Dense head ---
+    x = Dense(dense_units, activation='relu')(x)
+    x = Dropout(dense_dropout)(x)
+    out = Dense(1)(x)
+
+    model = Model(inputs=inp, outputs=out)
     model.compile(
-        optimizer='adam',  # Adam: Adaptive learning rate optimizer (very popular, works well)
-        loss='mse',  # MSE: Mean Squared Error - standard loss for regression
-        metrics=['mae']  # MAE: Mean Absolute Error - easier to interpret than MSE
+        optimizer=keras.optimizers.Adam(learning_rate=1e-3),
+        loss='huber',
+        metrics=['mae'],
     )
-
     return model
 
+
+# ============================================================================
+# DIRECTION METRICS
+# ============================================================================
+
 def calculate_direction_metrics(y_true, y_pred):
-    """
-    Calculate classification metrics for price direction prediction
+    y_true_dir = (np.diff(y_true) > 0).astype(int)
+    y_pred_dir = (np.diff(y_pred) > 0).astype(int)
+    acc  = accuracy_score(y_true_dir, y_pred_dir)
+    prec = precision_score(y_true_dir, y_pred_dir, zero_division=0)
+    rec  = recall_score(y_true_dir, y_pred_dir, zero_division=0)
+    f1   = f1_score(y_true_dir, y_pred_dir, zero_division=0)
+    return acc, prec, rec, f1
 
-    While LSTM predicts exact prices, traders care about DIRECTION:
-    "Will price go UP or DOWN tomorrow?"
 
-    This converts continuous price predictions to binary direction:
-    - 1 = UP (price increased)
-    - 0 = DOWN (price decreased)
+# ============================================================================
+# MAIN TRAINING FUNCTION
+# ============================================================================
 
-    Metrics:
-    - Accuracy: % of correct direction predictions
-    - Precision: Of predicted UPs, how many were actually UP?
-    - Recall: Of actual UPs, how many did we catch?
-    - F1: Harmonic mean of precision and recall
-
-    Args:
-        y_true (array): Actual prices
-        y_pred (array): Predicted prices
-
-    Returns:
-        accuracy, precision, recall, f1 (floats)
-    """
-    # np.diff calculates day-to-day changes
-    # > 0 checks if change is positive (UP)
-    # .astype(int) converts True/False to 1/0
-    y_true_direction = (np.diff(y_true) > 0).astype(int)
-    y_pred_direction = (np.diff(y_pred) > 0).astype(int)
-
-    accuracy = accuracy_score(y_true_direction, y_pred_direction)
-    precision = precision_score(y_true_direction, y_pred_direction, zero_division=0)
-    recall = recall_score(y_true_direction, y_pred_direction, zero_division=0)
-    f1 = f1_score(y_true_direction, y_pred_direction, zero_division=0)
-
-    return accuracy, precision, recall, f1
-
-def train_lstm_model(csv_file, lookback=60, epochs=100, batch_size=32):
-    """
-    Main training function for LSTM model
-
-    Training Process:
-    1. Load and prepare data
-    2. Scale features to 0-1 range (LSTM works best with normalized data)
-    3. Create sequences (60-day windows)
-    4. Build LSTM model
-    5. Train with early stopping (stops if no improvement)
-    6. Evaluate on test set
-    7. Save model and results
-
-    Args:
-        csv_file (str): Path to stock data CSV
-        lookback (int): Sequence length (default: 60 days)
-        epochs (int): Maximum training iterations (default: 100)
-        batch_size (int): Samples per training batch (default: 32)
-
-    Parameters Explained:
-    - lookback (60): LSTM sees 60 days of history to predict day 61
-      Too small -> can't learn long-term patterns
-      Too large -> not enough training samples
-    - epochs (100): How many times to go through entire dataset
-      Early stopping will stop earlier if model stops improving
-    - batch_size (32): Process 32 sequences at once
-      Larger = faster but needs more GPU memory
-      Smaller = slower but more stable training
-    """
-
-    # === Step 1: Load Data ===
+def train_lstm_model(
+    csv_file,
+    lookback=60,
+    epochs=150,
+    batch_size=32,
+    # CNN hyperparameters
+    cnn1_filters=64,
+    cnn1_kernel=3,
+    cnn2_filters=256,
+    cnn2_kernel=5,
+    cnn3_filters=64,
+    cnn3_kernel=3,
+    pool_size=2,
+    cnn_dropout=0.25,
+    # LSTM hyperparameters
+    lstm1_units=128,
+    lstm2_units=64,
+    lstm_dropout=0.3,
+    # Dense head
+    dense_units=32,
+    dense_dropout=0.2,
+):
+    # ---- Load data ----
     df, feature_cols = load_and_prepare_data(csv_file)
+    train_df, test_df = split_train_test(df, train_ratio=9/10)
 
-    # === Step 2: Keep Only Necessary Columns ===
-    df = prepare_data_for_lstm(df, feature_cols)
+    X_train_raw = train_df[feature_cols].values
+    y_train_raw = train_df['Close'].values
+    X_test_raw  = test_df[feature_cols].values
+    y_test_raw  = test_df['Close'].values
 
-    # === Step 3: Split Train/Test ===
-    train_df, test_df = split_train_test(df, feature_cols)
-
-    # === Step 3: Prepare Features and Target ===
-    # Extract feature columns and target (Close price)
-    X_train_data = train_df[feature_cols].values
-    y_train_data = train_df['Close'].values
-
-    X_test_data = test_df[feature_cols].values
-    y_test_data = test_df['Close'].values
-
-    # === Step 4: Scale Data ===
-    # MinMaxScaler: Transforms data to range [0, 1]
-    # Why? Neural networks train better with normalized inputs
-    # Formula: x_scaled = (x - min) / (max - min)
+    # ---- Scale ----
+    # scaler_X: all indicator features  (MinMax → [0,1])
+    # scaler_y: Close price target only
     scaler_X = MinMaxScaler()
     scaler_y = MinMaxScaler()
 
-    # fit_transform on training data: Learn min/max and transform
-    X_train_scaled = scaler_X.fit_transform(X_train_data)
-    y_train_scaled = scaler_y.fit_transform(y_train_data.reshape(-1, 1))
+    X_train_scaled = scaler_X.fit_transform(X_train_raw)
+    y_train_scaled = scaler_y.fit_transform(y_train_raw.reshape(-1, 1))
 
-    # transform on test data: Use training min/max (no peeking at test data!)
-    X_test_scaled = scaler_X.transform(X_test_data)
-    y_test_scaled = scaler_y.transform(y_test_data.reshape(-1, 1))
+    X_test_scaled  = scaler_X.transform(X_test_raw)
+    y_test_scaled  = scaler_y.transform(y_test_raw.reshape(-1, 1))
 
-    # === Step 5: Create Sequences ===
-    # Transform flat data into sequences for LSTM
+    # ---- Create sequences ----
     X_train, y_train = create_sequences(X_train_scaled, y_train_scaled, lookback)
-    X_test, y_test = create_sequences(X_test_scaled, y_test_scaled, lookback)
+    X_test,  y_test  = create_sequences(X_test_scaled,  y_test_scaled,  lookback)
 
-    print(f"\nSequence shape:")
-    print(f"X_train shape: {X_train.shape}")  # (samples, lookback, features)
-    print(f"y_train shape: {y_train.shape}")  # (samples, 1)
-    print(f"X_test shape: {X_test.shape}")
-    print(f"y_test shape: {y_test.shape}")
+    print(f"\nSequence shapes:")
+    print(f"  X_train: {X_train.shape}  y_train: {y_train.shape}")
+    print(f"  X_test:  {X_test.shape}   y_test:  {y_test.shape}")
 
-    # Check if we have enough data
     if len(X_train) == 0 or len(X_test) == 0:
-        print("\n" + "="*60)
-        print("ERROR: Not enough data to create sequences!")
-        print("="*60)
-        print(f"Lookback period: {lookback} days")
-        print(f"Training data: {len(y_train_scaled)} days")
-        print(f"Test data: {len(y_test_scaled)} days")
-        print(f"\nSequences created:")
-        print(f"  Training sequences: {len(X_train)}")
-        print(f"  Test sequences: {len(X_test)}")
-
-        # Calculate recommended lookback
-        max_lookback = min(len(y_train_scaled), len(y_test_scaled)) - 1
-        recommended_lookback = max(10, max_lookback // 2)
-
-        print(f"\nSOLUTION:")
-        print(f"  Reduce lookback to: {recommended_lookback} days or less")
-        print(f"  Example: python train_lstm.py {csv_file} --lookback {recommended_lookback}")
-        print(f"\n  OR fetch more data (e.g., 12 months):")
-        print(f"  python fetch_stock_data.py MSFT --months 12")
-        print("="*60)
+        print("ERROR: Not enough data to create sequences. Reduce --lookback or fetch more data.")
         return
 
-    # === Step 6: Build Model ===
-    print("\nBuilding LSTM model...")
-    model = build_lstm_model((X_train.shape[1], X_train.shape[2]))
-    print(model.summary())  # Print model architecture
+    # ---- Build model ----
+    print(f"\nBuilding CNN-1D + LSTM model  (input: {X_train.shape[1:]})")
+    model = build_cnn_lstm_model(
+        input_shape=(X_train.shape[1], X_train.shape[2]),
+        cnn1_filters=cnn1_filters, cnn1_kernel=cnn1_kernel,
+        cnn2_filters=cnn2_filters, cnn2_kernel=cnn2_kernel,
+        cnn3_filters=cnn3_filters, cnn3_kernel=cnn3_kernel,
+        pool_size=pool_size,       cnn_dropout=cnn_dropout,
+        lstm1_units=lstm1_units,   lstm2_units=lstm2_units,
+        lstm_dropout=lstm_dropout,
+        dense_units=dense_units,   dense_dropout=dense_dropout,
+    )
+    print(model.summary())
 
-    # === Step 7: Configure Training Callbacks ===
-    # Callbacks: Functions called during training
-
-    # EarlyStopping: Stop training if validation loss doesn't improve
+    # ---- Callbacks ----
     early_stop = EarlyStopping(
-        monitor='val_loss',  # Watch validation loss
-        patience=10,  # Wait 10 epochs before stopping
-        restore_best_weights=True  # Load weights from best epoch
+        monitor='val_loss', patience=15,
+        restore_best_weights=True, verbose=0
+    )
+    checkpoint = ModelCheckpoint(
+        'best_lstm_model.keras', monitor='val_loss',
+        save_best_only=True, verbose=0
+    )
+    reduce_lr = ReduceLROnPlateau(
+        monitor='val_loss', factor=0.5,
+        patience=7, min_lr=1e-6, verbose=0
     )
 
-    # ModelCheckpoint: Save best model during training
-    model_checkpoint = ModelCheckpoint(
-        'best_lstm_model.keras',  # Filename
-        monitor='val_loss',  # Save when this improves
-        save_best_only=True  # Only save if better than previous best
-    )
-
-    # === Step 8: Train Model ===
-    print("\nTraining LSTM model on GPU...")
-    print("This may take 1-2 minutes with GPU, 5-10 minutes with CPU")
+    # ---- Train ----
+    print(f"\nTraining CNN-LSTM on {_device}...")
+    print("This may take 2-5 minutes with GPU, 10-20 minutes with CPU")
 
     history = model.fit(
-        X_train, y_train,  # Training data
-        epochs=epochs,  # Maximum number of epochs
-        batch_size=batch_size,  # Process 32 sequences at a time
-        validation_split=0.1,  # Use 10% of training for validation
-        callbacks=[early_stop, model_checkpoint],  # Apply callbacks
-        verbose=1  # Print progress
+        X_train, y_train,
+        epochs=epochs,
+        batch_size=batch_size,
+        validation_split=0.1,
+        callbacks=[early_stop, checkpoint, reduce_lr],
+        verbose=1,
     )
 
-    # === Step 9: Load Best Model ===
     model = keras.models.load_model('best_lstm_model.keras')
 
-    # === Step 10: Make Predictions ===
+    # ---- Predict ----
     print("\nMaking predictions...")
-    y_train_pred_scaled = model.predict(X_train)
-    y_test_pred_scaled = model.predict(X_test)
+    y_train_pred_scaled = model.predict(X_train, verbose=0)
+    y_test_pred_scaled  = model.predict(X_test,  verbose=0)
 
-    # === Step 11: Inverse Transform (Scale Back to Original Prices) ===
-    # Convert from [0, 1] range back to actual dollar prices
-    y_train_pred = scaler_y.inverse_transform(y_train_pred_scaled)
-    y_test_pred = scaler_y.inverse_transform(y_test_pred_scaled)
-    y_train_actual = scaler_y.inverse_transform(y_train)
-    y_test_actual = scaler_y.inverse_transform(y_test)
+    y_train_pred = scaler_y.inverse_transform(y_train_pred_scaled).flatten()
+    y_test_pred  = scaler_y.inverse_transform(y_test_pred_scaled).flatten()
+    y_train_act  = scaler_y.inverse_transform(y_train).flatten()
+    y_test_act   = scaler_y.inverse_transform(y_test).flatten()
 
-    # === Step 12: Calculate Regression Metrics ===
-    # MAE: Average absolute difference between predicted and actual
-    # RMSE: Square root of average squared difference (penalizes large errors more)
-    train_mae = mean_absolute_error(y_train_actual, y_train_pred)
-    train_rmse = np.sqrt(mean_squared_error(y_train_actual, y_train_pred))
-    test_mae = mean_absolute_error(y_test_actual, y_test_pred)
-    test_rmse = np.sqrt(mean_squared_error(y_test_actual, y_test_pred))
+    # ---- Metrics ----
+    train_mae  = mean_absolute_error(y_train_act, y_train_pred)
+    train_rmse = np.sqrt(mean_squared_error(y_train_act, y_train_pred))
+    test_mae   = mean_absolute_error(y_test_act,  y_test_pred)
+    test_rmse  = np.sqrt(mean_squared_error(y_test_act,  y_test_pred))
 
-    # === Step 13: Calculate Direction Metrics ===
-    train_acc, train_prec, train_rec, train_f1 = calculate_direction_metrics(
-        y_train_actual.flatten(), y_train_pred.flatten()
-    )
-    test_acc, test_prec, test_rec, test_f1 = calculate_direction_metrics(
-        y_test_actual.flatten(), y_test_pred.flatten()
-    )
+    train_acc, train_prec, train_rec, train_f1 = calculate_direction_metrics(y_train_act, y_train_pred)
+    test_acc,  test_prec,  test_rec,  test_f1  = calculate_direction_metrics(y_test_act,  y_test_pred)
 
-    # === Step 14: Print Results ===
     print("\n" + "="*60)
-    print("LSTM MODEL EVALUATION RESULTS")
+    print("CNN-LSTM MODEL EVALUATION RESULTS")
     print("="*60)
-
     print("\nREGRESSION METRICS (Price Prediction):")
-    print(f"Training MAE:  ${train_mae:.2f}")
-    print(f"Training RMSE: ${train_rmse:.2f}")
-    print(f"Test MAE:      ${test_mae:.2f}")
-    print(f"Test RMSE:     ${test_rmse:.2f}")
-
-    print("\nCLASSIFICATION METRICS (Direction Prediction - Up/Down):")
-    print(f"Training Accuracy:  {train_acc*100:.2f}%")
-    print(f"Training Precision: {train_prec*100:.2f}%")
-    print(f"Training Recall:    {train_rec*100:.2f}%")
-    print(f"Training F1-Score:  {train_f1*100:.2f}%")
-    print(f"\nTest Accuracy:      {test_acc*100:.2f}%")
-    print(f"Test Precision:     {test_prec*100:.2f}%")
-    print(f"Test Recall:        {test_rec*100:.2f}%")
-    print(f"Test F1-Score:      {test_f1*100:.2f}%")
-
+    print(f"  Training MAE:   ${train_mae:.2f}")
+    print(f"  Training RMSE:  ${train_rmse:.2f}")
+    print(f"  Test MAE:       ${test_mae:.2f}")
+    print(f"  Test RMSE:      ${test_rmse:.2f}")
+    print("\nCLASSIFICATION METRICS (Direction Prediction Up/Down):")
+    print(f"  Training Accuracy:  {train_acc*100:.2f}%")
+    print(f"  Training Precision: {train_prec*100:.2f}%")
+    print(f"  Training Recall:    {train_rec*100:.2f}%")
+    print(f"  Training F1-Score:  {train_f1*100:.2f}%")
+    print(f"\n  Test Accuracy:      {test_acc*100:.2f}%")
+    print(f"  Test Precision:     {test_prec*100:.2f}%")
+    print(f"  Test Recall:        {test_rec*100:.2f}%")
+    print(f"  Test F1-Score:      {test_f1*100:.2f}%")
     print("\n" + "="*60)
 
-    # === Step 15: Plot Training History ===
+    # ---- Plots ----
     plt.figure(figsize=(12, 4))
-
-    # Plot loss over epochs
     plt.subplot(1, 2, 1)
-    plt.plot(history.history['loss'], label='Training Loss')
-    plt.plot(history.history['val_loss'], label='Validation Loss')
-    plt.title('Model Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.grid(True)
+    plt.plot(history.history['loss'],     label='Train Loss')
+    plt.plot(history.history['val_loss'], label='Val Loss')
+    plt.title('Model Loss'); plt.xlabel('Epoch'); plt.ylabel('Loss')
+    plt.legend(); plt.grid(True)
 
-    # Plot MAE over epochs
     plt.subplot(1, 2, 2)
-    plt.plot(history.history['mae'], label='Training MAE')
-    plt.plot(history.history['val_mae'], label='Validation MAE')
-    plt.title('Model MAE')
-    plt.xlabel('Epoch')
-    plt.ylabel('MAE')
-    plt.legend()
-    plt.grid(True)
+    plt.plot(history.history['mae'],     label='Train MAE')
+    plt.plot(history.history['val_mae'], label='Val MAE')
+    plt.title('Model MAE'); plt.xlabel('Epoch'); plt.ylabel('MAE')
+    plt.legend(); plt.grid(True)
 
     plt.tight_layout()
     plt.savefig('lstm_training_history.png')
     print("\nTraining history plot saved as: lstm_training_history.png")
 
-    # === Step 16: Plot Predictions ===
     plt.figure(figsize=(15, 6))
-
-    # Get dates for x-axis
     test_dates = test_df['Date'].values[lookback:]
-    plt.plot(test_dates, y_test_actual, label='Actual Price', color='blue', linewidth=2)
-    plt.plot(test_dates, y_test_pred, label='Predicted Price', color='red', linewidth=2, alpha=0.7)
-    plt.title('LSTM Model: Actual vs Predicted Prices (Test Set)')
-    plt.xlabel('Date')
-    plt.ylabel('Price')
-    plt.legend()
-    plt.xticks(rotation=45)
-    plt.grid(True)
-    plt.tight_layout()
+    plt.plot(test_dates, y_test_act,  label='Actual',    color='blue', linewidth=2)
+    plt.plot(test_dates, y_test_pred, label='Predicted', color='red',  linewidth=2, alpha=0.7)
+    plt.title('CNN-LSTM: Actual vs Predicted Prices (Test Set)')
+    plt.xlabel('Date'); plt.ylabel('Price')
+    plt.legend(); plt.xticks(rotation=45); plt.grid(True); plt.tight_layout()
     plt.savefig('lstm_predictions.png')
     print("Predictions plot saved as: lstm_predictions.png")
 
-    # === Step 17: Generate Trading Signal ===
+    # ---- Trading signal ----
     print("\n" + "="*60)
     print("TRADING SIGNAL FOR NEXT DAY")
     print("="*60)
 
-    # Get today's actual price (last price in original data)
     today_price = df['Close'].iloc[-1]
-    today_date = df['Date'].iloc[-1]
 
-    # Prepare sequence for tomorrow's prediction
-    # Use last 'lookback' days of actual data
-    recent_data = df[feature_cols].tail(lookback).values
+    recent_data   = df[feature_cols].tail(lookback).values
     recent_scaled = scaler_X.transform(recent_data)
-    recent_sequence = recent_scaled.reshape(1, lookback, len(feature_cols))
+    X_input       = recent_scaled.reshape(1, lookback, len(feature_cols))
 
-    # Predict tomorrow's price
-    tomorrow_pred_scaled = model.predict(recent_sequence, verbose=0)
-    tomorrow_pred = scaler_y.inverse_transform(tomorrow_pred_scaled)[0][0]
+    tomorrow_pred_scaled = model.predict(X_input, verbose=0)
+    tomorrow_pred        = scaler_y.inverse_transform(tomorrow_pred_scaled)[0][0]
 
-    # Calculate expected move
-    expected_move = tomorrow_pred - today_price
+    expected_move     = tomorrow_pred - today_price
     expected_move_pct = (expected_move / today_price) * 100
 
-    # Determine signal
     if expected_move_pct > 0.5:
         signal = "BUY (LONG)"
         signal_emoji = "[BUY]"
@@ -541,37 +641,32 @@ def train_lstm_model(csv_file, lookback=60, epochs=100, batch_size=32):
         signal = "HOLD (No clear signal)"
         signal_emoji = "[HOLD]"
 
-    # Calculate stop loss and take profit using recent volatility
-    recent_prices = df['Close'].tail(20)
-    daily_returns = recent_prices.pct_change().dropna()
-    volatility = daily_returns.std() * today_price
+    recent_prices  = df['Close'].tail(20)
+    daily_returns  = recent_prices.pct_change().dropna()
+    volatility     = daily_returns.std() * today_price
 
-    # SWING TRADING MODE (1-2 day trades with 5x leverage)
-    # Stop Loss: 0.6x volatility (~1.5% stock move = 7.5% position loss)
-    # Take Profit: 1.0x volatility (~2.5% stock move = 12.5% position gain)
-    stop_loss_distance = 0.6 * volatility
+    stop_loss_distance   = 0.6 * volatility
     take_profit_distance = 1.0 * volatility
 
     if signal == "BUY (LONG)":
-        stop_loss = today_price - stop_loss_distance
+        stop_loss   = today_price - stop_loss_distance
         take_profit = today_price + take_profit_distance
     elif signal == "SHORT (SELL)":
-        stop_loss = today_price + stop_loss_distance
+        stop_loss   = today_price + stop_loss_distance
         take_profit = today_price - take_profit_distance
     else:
-        stop_loss = today_price - stop_loss_distance
+        stop_loss   = today_price - stop_loss_distance
         take_profit = today_price + take_profit_distance
 
     confidence = test_acc * 100
 
-    # Print trading signal
     print(f"\n{signal_emoji} SIGNAL: {signal}")
-    print(f"\nCurrent Price (Today):     ${today_price:.2f}")
+    print(f"\nCurrent Price (Today):      ${today_price:.2f}")
     print(f"Predicted Price (Tomorrow): ${tomorrow_pred:.2f}")
-    print(f"Expected Move:             ${expected_move:+.2f} ({expected_move_pct:+.2f}%)")
+    print(f"Expected Move:              ${expected_move:+.2f} ({expected_move_pct:+.2f}%)")
     print(f"\nRisk Management (Stock Price Levels):")
-    print(f"  Stop Loss:     ${stop_loss:.2f} ({((stop_loss - today_price) / today_price * 100):+.2f}%)")
-    print(f"  Take Profit:   ${take_profit:.2f} ({((take_profit - today_price) / today_price * 100):+.2f}%)")
+    print(f"  Stop Loss:    ${stop_loss:.2f} ({((stop_loss - today_price) / today_price * 100):+.2f}%)")
+    print(f"  Take Profit:  ${take_profit:.2f} ({((take_profit - today_price) / today_price * 100):+.2f}%)")
     print(f"\n5x Leverage Position P&L (for IQ Option auto-close):")
     print(f"  Stop Loss %:   {((stop_loss - today_price) / today_price * 100 * 5):+.1f}%")
     print(f"  Take Profit %: {((take_profit - today_price) / today_price * 100 * 5):+.1f}%")
@@ -579,53 +674,47 @@ def train_lstm_model(csv_file, lookback=60, epochs=100, batch_size=32):
     print(f"\nModel Confidence: {confidence:.1f}% (based on test accuracy)")
     print(f"Recent Volatility: ${volatility:.2f} per day")
 
-    # ========================================================================
-    # MULTI-APPROACH PROBABILITY ANALYSIS
-    # ========================================================================
+    # ---- Multi-approach probability analysis ----
     print("\n" + "="*70)
     print("Running Multi-Approach Win Probability Analysis...")
     print("="*70)
 
-    # Approach 1: Multi-Day Sequential Prediction
     print("\n[1/3] Running multi-day sequential prediction...")
     prediction_result = predict_multi_day_path(
         model=model,
-        scaler=scaler_X,  # LSTM uses scaler_X for features
-        df=df,  # LSTM uses original df with basic OHLCV features
-        feature_cols=feature_cols,  # LSTM uses basic features (no lag features)
+        scaler=scaler_X,
+        df=df,
+        feature_cols=feature_cols,
         current_price=today_price,
         stop_loss=stop_loss,
         take_profit=take_profit,
-        model_type='lstm'
+        model_type='lstm',
+        target_scaler=scaler_y,
     )
 
-    # Approach 2: Monte Carlo Simulation
     print("[2/3] Running Monte Carlo simulation...")
     monte_carlo_result = monte_carlo_simulation(
         current_price=today_price,
         stop_loss=stop_loss,
         take_profit=take_profit,
         volatility=volatility,
-        predicted_move_pct=expected_move_pct
+        predicted_move_pct=expected_move_pct,
     )
 
-    # Approach 3: Historical Pattern Matching
     print("[3/3] Searching historical patterns...")
     pattern_result = find_similar_patterns(
         df=df,
         current_price=today_price,
         stop_loss=stop_loss,
-        take_profit=take_profit
+        take_profit=take_profit,
     )
 
-    # Calculate Ensemble Probability
     ensemble_result = calculate_ensemble_probability(
         prediction_result=prediction_result,
         monte_carlo_result=monte_carlo_result,
-        pattern_result=pattern_result
+        pattern_result=pattern_result,
     )
 
-    # Print detailed report
     analysis_report = format_analysis_report(
         prediction_result=prediction_result,
         monte_carlo_result=monte_carlo_result,
@@ -634,11 +723,10 @@ def train_lstm_model(csv_file, lookback=60, epochs=100, batch_size=32):
         signal=signal,
         current_price=today_price,
         stop_loss=stop_loss,
-        take_profit=take_profit
+        take_profit=take_profit,
     )
     print(analysis_report)
 
-    # Store results for HTML report (will be parsed by main.py)
     print("\n" + "="*70)
     print("PROBABILITY_ANALYSIS_RESULTS:")
     print(f"ENSEMBLE_PROBABILITY: {ensemble_result['ensemble_probability']:.1f}%" if ensemble_result else "ENSEMBLE_PROBABILITY: N/A")
@@ -653,23 +741,25 @@ def train_lstm_model(csv_file, lookback=60, epochs=100, batch_size=32):
     print("Always do your own research and manage risk appropriately.")
     print("="*60)
 
-    # === Step 18: Save Model Info ===
+    # ---- Save model info ----
     ticker = os.path.basename(csv_file).split('_')[0]
     model_info = {
-        'ticker': ticker,
-        'model_type': 'LSTM (Keras + PyTorch + GPU)',
-        'backend': keras.backend.backend(),
-        'gpu_used': torch.cuda.is_available(),
-        'lookback': lookback,
-        'train_size': len(X_train),
-        'test_size': len(X_test),
-        'test_mae': test_mae,
-        'test_rmse': test_rmse,
-        'test_accuracy': test_acc,
+        'ticker':         ticker,
+        'model_type':     f'CNN-1D + LSTM (Keras + PyTorch + {_device})',
+        'backend':        keras.backend.backend(),
+        'gpu_used':       torch.cuda.is_available(),
+        'n_features':     len(feature_cols),
+        'lookback':       lookback,
+        'architecture':   f'Conv1D({cnn1_filters},{cnn1_kernel}) → Conv1D({cnn2_filters},{cnn2_kernel}) → Conv1D({cnn3_filters},{cnn3_kernel}) → LSTM({lstm1_units}) → LSTM({lstm2_units}) → Dense({dense_units})',
+        'train_size':     len(X_train),
+        'test_size':      len(X_test),
+        'test_mae':       test_mae,
+        'test_rmse':      test_rmse,
+        'test_accuracy':  test_acc,
         'test_precision': test_prec,
-        'test_recall': test_rec,
-        'test_f1': test_f1,
-        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        'test_recall':    test_rec,
+        'test_f1':        test_f1,
+        'timestamp':      datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
     }
 
     with open('lstm_model_info.txt', 'w') as f:
@@ -681,12 +771,46 @@ def train_lstm_model(csv_file, lookback=60, epochs=100, batch_size=32):
 
     return model, history, model_info
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Train LSTM model for stock price prediction')
-    parser.add_argument('csv_file', type=str, help='Path to CSV file with stock data')
-    parser.add_argument('--lookback', type=int, default=60, help='Lookback period (default: 60)')
-    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs (default: 100)')
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size (default: 32)')
+    parser = argparse.ArgumentParser(
+        description='Train CNN-1D + LSTM model for stock price prediction',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  python train_lstm.py MSFT_daily_data_20260520.csv
+  python train_lstm.py MSFT_daily_data_20260520.csv --lookback 90 --epochs 200
+  python train_lstm.py MSFT_daily_data_20260520.csv \\
+      --cnn1_filters 128 --cnn2_filters 256 --lstm1_units 256 --lstm2_units 128
+
+Architecture parameters:
+  CNN block 1  : --cnn1_filters  --cnn1_kernel
+  CNN block 2  : --cnn2_filters  --cnn2_kernel  --pool_size
+  CNN block 3  : --cnn3_filters  --cnn3_kernel  --cnn_dropout
+  LSTM         : --lstm1_units   --lstm2_units   --lstm_dropout
+  Dense head   : --dense_units   --dense_dropout
+        '''
+    )
+    parser.add_argument('csv_file', type=str)
+    parser.add_argument('--lookback',      type=int,   default=60)
+    parser.add_argument('--epochs',        type=int,   default=150)
+    parser.add_argument('--batch_size',    type=int,   default=32)
+    # CNN
+    parser.add_argument('--cnn1_filters',  type=int,   default=64)
+    parser.add_argument('--cnn1_kernel',   type=int,   default=3)
+    parser.add_argument('--cnn2_filters',  type=int,   default=256)
+    parser.add_argument('--cnn2_kernel',   type=int,   default=5)
+    parser.add_argument('--cnn3_filters',  type=int,   default=64)
+    parser.add_argument('--cnn3_kernel',   type=int,   default=3)
+    parser.add_argument('--pool_size',     type=int,   default=2)
+    parser.add_argument('--cnn_dropout',   type=float, default=0.25)
+    # LSTM
+    parser.add_argument('--lstm1_units',   type=int,   default=128)
+    parser.add_argument('--lstm2_units',   type=int,   default=64)
+    parser.add_argument('--lstm_dropout',  type=float, default=0.3)
+    # Dense
+    parser.add_argument('--dense_units',   type=int,   default=32)
+    parser.add_argument('--dense_dropout', type=float, default=0.2)
 
     args = parser.parse_args()
 
@@ -694,4 +818,22 @@ if __name__ == "__main__":
         print(f"Error: File {args.csv_file} not found!")
         exit(1)
 
-    train_lstm_model(args.csv_file, args.lookback, args.epochs, args.batch_size)
+    train_lstm_model(
+        args.csv_file,
+        lookback=args.lookback,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        cnn1_filters=args.cnn1_filters,
+        cnn1_kernel=args.cnn1_kernel,
+        cnn2_filters=args.cnn2_filters,
+        cnn2_kernel=args.cnn2_kernel,
+        cnn3_filters=args.cnn3_filters,
+        cnn3_kernel=args.cnn3_kernel,
+        pool_size=args.pool_size,
+        cnn_dropout=args.cnn_dropout,
+        lstm1_units=args.lstm1_units,
+        lstm2_units=args.lstm2_units,
+        lstm_dropout=args.lstm_dropout,
+        dense_units=args.dense_units,
+        dense_dropout=args.dense_dropout,
+    )

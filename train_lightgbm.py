@@ -294,38 +294,10 @@ def train_lightgbm_model(csv_file, n_estimators=1000, learning_rate=0.01, num_le
 
     # Try GPU first, fallback to CPU if not available
     # GPU can speed up training 2-4x for large datasets
-    try:
-        model = lgb.LGBMRegressor(
-            # === Core Parameters ===
-            n_estimators=n_estimators,  # Number of trees (default: 1000)
-                                        # More trees = more learning, but slower training
-            learning_rate=learning_rate,  # How much each tree contributes (default: 0.01)
-                                          # Lower = more trees needed, but better generalization
-            num_leaves=num_leaves,  # Maximum number of leaves per tree (default: 31)
-                                    # LightGBM specific - controls tree complexity
-                                    # More leaves = more complex patterns, but risk overfitting
-                                    # Roughly equivalent to XGBoost's 2^max_depth
+    _using_gpu = False
 
-            # === Regularization Parameters (prevent overfitting) ===
-            min_data_in_leaf=20,  # Minimum samples required in a leaf
-                                  # Prevents creating leaves with too few samples
-            subsample=0.8,  # Use 80% of data for each tree (random sampling)
-                            # Adds randomness -> reduces overfitting
-            colsample_bytree=0.8,  # Use 80% of features for each tree
-                                   # Prevents model from relying too heavily on any single feature
-            reg_alpha=0.0,  # L1 regularization (Lasso) - feature selection
-            reg_lambda=0.0,  # L2 regularization (Ridge) - weight penalty
-
-            # === Other Parameters ===
-            random_state=42,  # Seed for reproducibility (same results every run)
-            device='gpu',  # Use GPU for training (IMPORTANT: This enables GPU!)
-            verbose=-1  # Suppress warnings during training
-        )
-        print("Using GPU acceleration (CUDA)")
-    except Exception as e:
-        # If GPU fails (no CUDA, drivers missing, etc.), fall back to CPU
-        print(f"GPU not available, using CPU: {e}")
-        model = lgb.LGBMRegressor(
+    def _make_lgb_model(use_gpu):
+        params = dict(
             n_estimators=n_estimators,
             learning_rate=learning_rate,
             num_leaves=num_leaves,
@@ -335,20 +307,35 @@ def train_lightgbm_model(csv_file, n_estimators=1000, learning_rate=0.01, num_le
             reg_alpha=0.0,
             reg_lambda=0.0,
             random_state=42,
-            verbose=-1
-            # No device='gpu' - will use CPU
+            verbose=-1,
         )
+        if use_gpu:
+            params['device'] = 'gpu'
+        return lgb.LGBMRegressor(**params)
 
     # Train model
     # LightGBM builds trees sequentially: Tree1 -> Tree2 -> Tree3 -> ...
     # Each new tree learns to correct the errors of all previous trees
     print("\nTraining LightGBM model...")
-    model.fit(
-        X_train_scaled, y_train,  # Training data (features and targets)
-        eval_set=[(X_train_scaled, y_train), (X_test_scaled, y_test)],  # Track performance on both sets
-        eval_names=['train', 'test'],  # Names for evaluation sets
-        callbacks=[lgb.log_evaluation(period=50)]  # Print progress every 50 trees
-    )
+    try:
+        model = _make_lgb_model(use_gpu=True)
+        model.fit(
+            X_train_scaled, y_train,
+            eval_set=[(X_train_scaled, y_train), (X_test_scaled, y_test)],
+            eval_names=['train', 'test'],
+            callbacks=[lgb.log_evaluation(period=50)],
+        )
+        _using_gpu = True
+        print("Using GPU acceleration (CUDA)")
+    except Exception as e:
+        print(f"GPU not available, falling back to CPU: {e}")
+        model = _make_lgb_model(use_gpu=False)
+        model.fit(
+            X_train_scaled, y_train,
+            eval_set=[(X_train_scaled, y_train), (X_test_scaled, y_test)],
+            eval_names=['train', 'test'],
+            callbacks=[lgb.log_evaluation(period=50)],
+        )
 
     # Make predictions
     print("\nMaking predictions...")
@@ -579,7 +566,7 @@ def train_lightgbm_model(csv_file, n_estimators=1000, learning_rate=0.01, num_le
     ticker = os.path.basename(csv_file).split('_')[0]
     model_info = {
         'ticker': ticker,
-        'model_type': 'LightGBM',
+        'model_type': f'LightGBM ({"GPU" if _using_gpu else "CPU"})',
         'n_features': len(all_features),
         'train_size': len(X_train),
         'test_size': len(X_test),
