@@ -1217,8 +1217,10 @@ def generate_html_report(results, csv_file, output_file):
     html.append("### Model Comparison:\n")
     html.append("- **LSTM:** CNN-1D feature extraction + stacked LSTM + temporal attention")
     html.append("- **TFT:** CNN-1D + Gated Residual Networks + LSTM encoder + Multi-Head Attention")
-    html.append("- **XGBoost:** Gradient boosting, good with features, interpretable")
-    html.append("- **LightGBM:** Like XGBoost but faster, often more accurate")
+    html.append("- **XGBoost:** Gradient boosting, 5 OHLCV features, fast baseline")
+    html.append("- **XGBoost-Heavy:** XGBoost with 70+ features (52 indicators + lags), 3000 trees, lr=0.005")
+    html.append("- **LightGBM:** Leaf-wise gradient boosting, 5 OHLCV features, fast baseline")
+    html.append("- **LightGBM-Heavy:** LightGBM with 70+ features (52 indicators + lags), 3000 trees, lr=0.005, num_leaves=63")
     html.append("- **RandomForest:** Ensemble of decision trees, walk-forward validation, robust\n")
 
     html.append("</div>")  # Close content div
@@ -1312,17 +1314,19 @@ Default: 48 months (4 years) of historical data
 
     # Define models to run
     models = [
-        ('LSTM', 'train_lstm.py'),
-        ('TFT', 'train_tft.py'),
-        ('XGBoost', 'train_xgboost.py'),
-        ('LightGBM', 'train_lightgbm.py'),
-        ('RandomForest', 'train_randomforest.py')
+        ('LSTM',           'train_lstm.py'),
+        ('TFT',            'train_tft.py'),
+        ('XGBoost',        'train_xgboost.py'),
+        ('XGBoost-Heavy',  'train_xgboost_heavy.py'),
+        ('LightGBM',       'train_lightgbm.py'),
+        ('LightGBM-Heavy', 'train_lightgbm_heavy.py'),
+        ('RandomForest',   'train_randomforest.py'),
     ]
 
     # Run all models in parallel using ThreadPoolExecutor
     results = []
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=7) as executor:
         # Submit all tasks
         future_to_model = {
             executor.submit(run_model, name, script, csv_file): name
