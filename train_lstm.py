@@ -278,8 +278,8 @@ def split_train_test(df, train_ratio=9/10):
     train_df = df[:split_idx]
     test_df  = df[split_idx:]
     print(f"\nData split:")
-    print(f"  Train: {len(train_df)} records  ({train_df['Date'].min()} → {train_df['Date'].max()})")
-    print(f"  Test:  {len(test_df)} records  ({test_df['Date'].min()} → {test_df['Date'].max()})")
+    print(f"  Train: {len(train_df)} records  ({train_df['Date'].min()} to {train_df['Date'].max()})")
+    print(f"  Test:  {len(test_df)} records  ({test_df['Date'].min()} to {test_df['Date'].max()})")
     return train_df, test_df
 
 
@@ -415,7 +415,7 @@ def build_cnn_lstm_model(
              recurrent_dropout=lstm_recurrent_dropout)(x)
     x = Dropout(lstm_dropout)(x)
 
-    # --- Temporal Attention (collapses timesteps → context vector) ---
+    # --- Temporal Attention (collapses timesteps -> context vector) ---
     x = TemporalAttention(name='temporal_attention')(x)    # (batch, lstm2_units)
 
     # --- Dense head ---
@@ -482,7 +482,7 @@ def train_lstm_model(
     y_test_raw  = test_df['Close'].values
 
     # ---- Scale ----
-    # scaler_X: all indicator features  (MinMax → [0,1])
+    # scaler_X: all indicator features  (MinMax -> [0,1])
     # scaler_y: Close price target only
     scaler_X = MinMaxScaler()
     scaler_y = MinMaxScaler()
@@ -754,7 +754,7 @@ def train_lstm_model(
         'gpu_used':       torch.cuda.is_available(),
         'n_features':     len(feature_cols),
         'lookback':       lookback,
-        'architecture':   f'Conv1D({cnn1_filters},{cnn1_kernel}) → Conv1D({cnn2_filters},{cnn2_kernel}) → Conv1D({cnn3_filters},{cnn3_kernel}) → LSTM({lstm1_units}) → LSTM({lstm2_units}) → Dense({dense_units})',
+        'architecture':   f'Conv1D({cnn1_filters},{cnn1_kernel}) -> Conv1D({cnn2_filters},{cnn2_kernel}) -> Conv1D({cnn3_filters},{cnn3_kernel}) -> LSTM({lstm1_units}) -> LSTM({lstm2_units}) -> Dense({dense_units})',
         'train_size':     len(X_train),
         'test_size':      len(X_test),
         'test_mae':       test_mae,

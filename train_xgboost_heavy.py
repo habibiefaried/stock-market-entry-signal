@@ -2,10 +2,10 @@
 XGBoost Heavy — Rich Feature Set + Deep Ensemble
 
 Differences from train_xgboost.py (standard):
-  Features  : 5 OHLCV → 70+ (all 52 technical indicators + lag features)
-  Trees     : 1,000  → 3,000
-  Learn rate: 0.01   → 0.005  (slower, more precise convergence)
-  max_depth : 7      → 8
+  Features  : 5 OHLCV -> 70+ (all 52 technical indicators + lag features)
+  Trees     : 1,000  -> 3,000
+  Learn rate: 0.01   -> 0.005  (slower, more precise convergence)
+  max_depth : 7      -> 8
   Regularisation: adds min_child_weight, gamma, reg_alpha, reg_lambda
   colsample : adds colsample_bylevel for extra diversity per tree level
 
@@ -13,13 +13,13 @@ Why more features help tree models:
   XGBoost picks the best split at each node from all available features.
   Giving it RSI, MACD, BB, ATR, Stoch, OBV, CCI, Williams %R, ROC, Momentum
   (plus lags) means it can find interactions like "Close is 3% above BB_upper
-  AND RSI_14 > 75 AND Volume_MA20_ratio > 1.5 → likely reversal" that raw
+  AND RSI_14 > 75 AND Volume_MA20_ratio > 1.5 -> likely reversal" that raw
   OHLCV lags cannot express.
 
 Why more trees + lower LR:
   Shrinkage (learning rate) controls how much each tree contributes.
   Lower LR forces the ensemble to use more trees to fit the signal, but each
-  tree corrects smaller residuals → smoother, less overfit function.
+  tree corrects smaller residuals -> smoother, less overfit function.
   Rule of thumb: halve LR, double n_estimators.
 """
 
@@ -237,8 +237,8 @@ def split_train_test(df, train_ratio=9/10):
     idx = int(len(df) * train_ratio)
     train_df, test_df = df[:idx], df[idx:]
     print(f"\nData split:")
-    print(f"  Train: {len(train_df)} records  ({train_df['Date'].min()} → {train_df['Date'].max()})")
-    print(f"  Test:  {len(test_df)} records  ({test_df['Date'].min()} → {test_df['Date'].max()})")
+    print(f"  Train: {len(train_df)} records  ({train_df['Date'].min()} to {train_df['Date'].max()})")
+    print(f"  Test:  {len(test_df)} records  ({test_df['Date'].min()} to {test_df['Date'].max()})")
     return train_df, test_df
 
 

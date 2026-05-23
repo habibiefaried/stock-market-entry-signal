@@ -12,9 +12,9 @@ Key Concepts:
 
 Walk-Forward Validation:
 Instead of single train/test split, we use rolling windows:
-1. Train on window 1 → Test on window 2
-2. Train on windows 1-2 → Test on window 3
-3. Train on windows 1-3 → Test on window 4
+1. Train on window 1 -> Test on window 2
+2. Train on windows 1-2 -> Test on window 3
+3. Train on windows 1-3 -> Test on window 4
 ... and so on. This prevents look-ahead bias and tests model on truly unseen data.
 """
 

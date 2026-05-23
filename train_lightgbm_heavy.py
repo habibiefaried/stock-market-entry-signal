@@ -2,21 +2,21 @@
 LightGBM Heavy — Rich Feature Set + Deep Ensemble
 
 Differences from train_lightgbm.py (standard):
-  Features  : 5 OHLCV → 70+ (all 52 technical indicators + lag features)
-  Trees     : 1,000  → 3,000
-  Learn rate: 0.01   → 0.005  (slower, more precise convergence)
-  num_leaves: 31     → 63     (deeper trees, more expressive splits)
+  Features  : 5 OHLCV -> 70+ (all 52 technical indicators + lag features)
+  Trees     : 1,000  -> 3,000
+  Learn rate: 0.01   -> 0.005  (slower, more precise convergence)
+  num_leaves: 31     -> 63     (deeper trees, more expressive splits)
   Regularisation: adds min_data_in_leaf, bagging_fraction, feature_fraction,
                   lambda_l1, lambda_l2
 
 Why more features help LightGBM:
   LightGBM uses leaf-wise tree growth — it always splits the leaf with the
   highest delta loss. With 70+ features it can find high-order interactions
-  like "RSI overbought AND BB squeeze tightening AND OBV diverging → reversal"
+  like "RSI overbought AND BB squeeze tightening AND OBV diverging -> reversal"
   that raw OHLCV lags simply cannot capture.
 
 Why more trees + lower LR:
-  Each tree corrects smaller residuals → smoother, less overfit function.
+  Each tree corrects smaller residuals -> smoother, less overfit function.
   Rule of thumb: halve LR, double n_estimators.
   LightGBM's GOSS (gradient-based one-side sampling) makes it especially
   efficient with large n_estimators.
@@ -233,8 +233,8 @@ def split_train_test(df, train_ratio=9/10):
     idx = int(len(df) * train_ratio)
     train_df, test_df = df[:idx], df[idx:]
     print(f"\nData split:")
-    print(f"  Train: {len(train_df)} records  ({train_df['Date'].min()} → {train_df['Date'].max()})")
-    print(f"  Test:  {len(test_df)} records  ({test_df['Date'].min()} → {test_df['Date'].max()})")
+    print(f"  Train: {len(train_df)} records  ({train_df['Date'].min()} to {train_df['Date'].max()})")
+    print(f"  Test:  {len(test_df)} records  ({test_df['Date'].min()} to {test_df['Date'].max()})")
     return train_df, test_df
 
 

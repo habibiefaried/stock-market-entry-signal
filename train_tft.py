@@ -357,17 +357,17 @@ def build_cnn_tft_model(
 
     Data flow:
       Input (lookback, n_features)
-        → CNN block 1  Conv1D(64,  k=3) + BN
-        → CNN block 2  Conv1D(256, k=5) + BN + MaxPool
-        → CNN block 3  Conv1D(64,  k=3) + BN + Dropout
-        → GRN per timestep          (non-linear feature transform)
-        → LSTM encoder              (local temporal context)
-        → GRN + skip                (refine encoder output)
-        → Multi-Head Self-Attention (long-range dependencies)
-        → GRN + skip                (post-attention refinement)
-        → GlobalAveragePooling      (collapse timestep axis)
-        → Dense(32) + Dropout
-        → Dense(1)                  (tomorrow's price)
+        -> CNN block 1  Conv1D(64,  k=3) + BN
+        -> CNN block 2  Conv1D(256, k=5) + BN + MaxPool
+        -> CNN block 3  Conv1D(64,  k=3) + BN + Dropout
+        -> GRN per timestep          (non-linear feature transform)
+        -> LSTM encoder              (local temporal context)
+        -> GRN + skip                (refine encoder output)
+        -> Multi-Head Self-Attention (long-range dependencies)
+        -> GRN + skip                (post-attention refinement)
+        -> GlobalAveragePooling      (collapse timestep axis)
+        -> Dense(32) + Dropout
+        -> Dense(1)                  (tomorrow's price)
 
     VSN is omitted from the per-timestep path here because the CNN already
     performs implicit feature selection; VSN would add O(n_features²)
@@ -461,8 +461,8 @@ def split_train_test(df, train_ratio=9/10):
     train_df  = df[:split_idx]
     test_df   = df[split_idx:]
     print(f"\nData split:")
-    print(f"  Train: {len(train_df)} records  ({train_df['Date'].min()} → {train_df['Date'].max()})")
-    print(f"  Test:  {len(test_df)} records  ({test_df['Date'].min()} → {test_df['Date'].max()})")
+    print(f"  Train: {len(train_df)} records  ({train_df['Date'].min()} to {train_df['Date'].max()})")
+    print(f"  Test:  {len(test_df)} records  ({test_df['Date'].min()} to {test_df['Date'].max()})")
     return train_df, test_df
 
 
@@ -797,12 +797,12 @@ def train_tft_model(
         'gpu_used':       torch.cuda.is_available(),
         'n_features':     len(feature_cols),
         'lookback':       lookback,
-        'architecture':   (f'Conv1D({cnn1_filters},{cnn1_kernel}) → '
-                           f'Conv1D({cnn2_filters},{cnn2_kernel}) → '
-                           f'Conv1D({cnn3_filters},{cnn3_kernel}) → '
-                           f'GRN → LSTM({lstm_units}) → GRN+gate → '
-                           f'MHA({n_heads}heads) → GRN+gate → '
-                           f'GAP → Dense({dense_units})'),
+        'architecture':   (f'Conv1D({cnn1_filters},{cnn1_kernel}) -> '
+                           f'Conv1D({cnn2_filters},{cnn2_kernel}) -> '
+                           f'Conv1D({cnn3_filters},{cnn3_kernel}) -> '
+                           f'GRN -> LSTM({lstm_units}) -> GRN+gate -> '
+                           f'MHA({n_heads}heads) -> GRN+gate -> '
+                           f'GAP -> Dense({dense_units})'),
         'train_size':     len(X_train),
         'test_size':      len(X_test),
         'test_mae':       test_mae,
