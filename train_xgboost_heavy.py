@@ -558,9 +558,10 @@ Examples:
     parser.add_argument('--min_child_weight',type=int,   default=3)
     parser.add_argument('--gamma',           type=float, default=0.1)
     parser.add_argument('--subsample',       type=float, default=0.8)
-    parser.add_argument('--colsample_bytree',type=float, default=0.7)
-    parser.add_argument('--reg_alpha',       type=float, default=0.05)
-    parser.add_argument('--reg_lambda',      type=float, default=1.0)
+    parser.add_argument('--colsample_bytree', type=float, default=0.7)
+    parser.add_argument('--colsample_bylevel',type=float, default=0.7)
+    parser.add_argument('--reg_alpha',        type=float, default=0.05)
+    parser.add_argument('--reg_lambda',       type=float, default=1.0)
 
     args = parser.parse_args()
     if not os.path.exists(args.csv_file):
@@ -576,6 +577,7 @@ Examples:
         gamma=args.gamma,
         subsample=args.subsample,
         colsample_bytree=args.colsample_bytree,
+        colsample_bylevel=args.colsample_bylevel,
         reg_alpha=args.reg_alpha,
         reg_lambda=args.reg_lambda,
     )

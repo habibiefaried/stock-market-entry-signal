@@ -289,9 +289,19 @@ def recalculate_features(df, feature_cols):
 
     # --- Volatility ---
     ret = c.pct_change()
-    for p, tag in [(5,'Volatility_5d'), (10,'Volatility_10d'), (20,'Volatility_20d')]:
+    for p, tag in [(5,'Volatility_5d'), (10,'Volatility_10d'), (20,'Volatility_20d'),
+                   (30,'Volatility_30d')]:
         if tag in feature_cols:
             df[tag] = ret.rolling(p).std() * 100
+
+    # --- Heavy-model derived features ---
+    if 'RSI14_slope_3d' in feature_cols and 'RSI_14' in df.columns:
+        df['RSI14_slope_3d'] = df['RSI_14'].diff(3)
+    if 'MACD_accel' in feature_cols and 'MACD_hist' in df.columns:
+        df['MACD_accel'] = df['MACD_hist'].diff(1)
+    if 'BB_squeeze' in feature_cols and 'BB_width' in df.columns:
+        bb_width_ma = df['BB_width'].rolling(20).mean()
+        df['BB_squeeze'] = df['BB_width'] / (bb_width_ma + 1e-10)
 
     # --- High/Low range ---
     if 'HL_range_pct' in feature_cols and 'High' in df.columns and 'Low' in df.columns:

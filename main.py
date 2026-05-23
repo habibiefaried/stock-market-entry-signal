@@ -108,7 +108,7 @@ def run_model(model_name, script_name, csv_file):
             [sys.executable, script_path, csv_file],
             capture_output=True,
             text=True,
-            timeout=600,  # 10 minute timeout
+            timeout=7200,  # 2 hour timeout (heavy models: 3000 trees, 30+ min on CPU)
             cwd=os.path.dirname(os.path.abspath(__file__))  # Set working directory
         )
 
@@ -132,7 +132,7 @@ def run_model(model_name, script_name, csv_file):
                 'error': result.stderr if result.stderr else "Unknown error - check output"
             }
     except subprocess.TimeoutExpired:
-        print(f"[{model_name}] [FAIL] Training timed out (>10 minutes)")
+        print(f"[{model_name}] [FAIL] Training timed out (>2 hours)")
         return {
             'name': model_name,
             'success': False,
@@ -1310,7 +1310,7 @@ Default: 48 months (4 years) of historical data
     print(f"Output report: {output_file}")
     print("="*60)
     print("\nTraining models in parallel...")
-    print("This will take 5-15 minutes depending on data size and GPU availability\n")
+    print("This will take 10-60 minutes depending on data size and GPU availability\n")
 
     # Define models to run
     models = [
