@@ -27,7 +27,7 @@ from sklearn.metrics import (mean_absolute_error, mean_squared_error,
 import keras
 from keras.models import Model
 from keras.layers import (Input, Conv1D, MaxPooling1D, LSTM, Dense,
-                          Dropout, BatchNormalization, Flatten, Concatenate, Layer)
+                          Dropout, BatchNormalization, Flatten, Concatenate, Layer, Activation)
 import keras.backend as K
 from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 import matplotlib
@@ -329,11 +329,12 @@ class TemporalAttention(Layer):
 
     def call(self, inputs):
         # inputs: (batch, timesteps, units)
-        score = K.tanh(K.dot(inputs, self.W) + self.b)   # (batch, timesteps, 1)
-        score = K.squeeze(score, axis=-1)                  # (batch, timesteps)
-        weights = K.softmax(score)                         # (batch, timesteps)
-        weights = K.expand_dims(weights, axis=-1)          # (batch, timesteps, 1)
-        context = K.sum(inputs * weights, axis=1)          # (batch, units)
+        import keras.ops as ops
+        score = ops.tanh(ops.matmul(inputs, self.W) + self.b)   # (batch, timesteps, 1)
+        score = ops.squeeze(score, axis=-1)                      # (batch, timesteps)
+        weights = ops.softmax(score)                             # (batch, timesteps)
+        weights = ops.expand_dims(weights, axis=-1)              # (batch, timesteps, 1)
+        context = ops.sum(inputs * weights, axis=1)              # (batch, units)
         return context
 
     def compute_output_shape(self, input_shape):

@@ -224,9 +224,10 @@ class GatedLinearUnit(Layer):
         self.dense = Dense(units * 2)
 
     def call(self, x):
+        import keras.ops as ops
         projected = self.dense(x)
         x1, x2 = projected[..., :self.units], projected[..., self.units:]
-        return x1 * K.sigmoid(x2)
+        return x1 * ops.sigmoid(x2)
 
     def get_config(self):
         cfg = super().get_config()
@@ -300,24 +301,27 @@ class VariableSelectionNetwork(Layer):
 
     def call(self, x, training=False):
         # x: (batch, timesteps, n_features)  or  (batch, n_features)
-        per_feature = K.stack(
+        import keras.ops as ops
+        per_feature = ops.stack(
             [self.feature_grns[i](x[..., i:i+1], training=training)
              for i in range(self.n_features)],
             axis=-2
         )  # (..., n_features, units)
 
         # Flatten last two dims to compute selection weights
-        flat  = K.reshape(per_feature,
-                          (-1,) + (self.n_features * self.units,)
-                          if len(K.int_shape(x)) == 2
-                          else K.int_shape(x)[:1] + (K.int_shape(x)[1],) + (self.n_features * self.units,))
+        x_shape = ops.shape(x)
+        if len(x.shape) == 2:
+            flat_shape = (-1, self.n_features * self.units)
+        else:
+            flat_shape = (x_shape[0], x_shape[1], self.n_features * self.units)
+        flat = ops.reshape(per_feature, flat_shape)
 
         # Use the raw input to produce selection weights
         weights = self.softmax(self.selector_grn(x, training=training))  # (..., n_features)
-        weights = K.expand_dims(weights, axis=-1)                         # (..., n_features, 1)
+        weights = ops.expand_dims(weights, axis=-1)                       # (..., n_features, 1)
 
         # Weighted combination
-        out = K.sum(per_feature * weights, axis=-2)   # (..., units)
+        out = ops.sum(per_feature * weights, axis=-2)   # (..., units)
         return out
 
     def get_config(self):
