@@ -736,6 +736,7 @@ def train_tft_model(
         take_profit=take_profit,
         model_type='lstm',         # same sequence interface as LSTM
         target_scaler=scaler_y,
+        lookback=lookback,
     )
 
     print("[2/3] Running Monte Carlo simulation...")

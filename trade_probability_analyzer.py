@@ -50,7 +50,7 @@ CONFIDENCE_MEDIUM = 65.0  # Between medium and high = MEDIUM confidence
 
 def predict_multi_day_path(model, scaler, df, feature_cols, current_price,
                            stop_loss, take_profit, n_days=PREDICTION_DAYS,
-                           model_type='gbm', target_scaler=None):
+                           model_type='gbm', target_scaler=None, lookback=60):
     """
     Predict next N days sequentially and check if TP or SL is hit.
 
@@ -88,7 +88,6 @@ def predict_multi_day_path(model, scaler, df, feature_cols, current_price,
 
     for day in range(1, n_days + 1):
         if model_type == 'lstm':
-            lookback = 60
             recent_data = df_sim[feature_cols].tail(lookback).values
             recent_data_scaled = scaler.transform(recent_data)
             X_input = recent_data_scaled.reshape(1, lookback, len(feature_cols))

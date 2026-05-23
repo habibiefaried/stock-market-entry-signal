@@ -693,6 +693,7 @@ def train_lstm_model(
         take_profit=take_profit,
         model_type='lstm',
         target_scaler=scaler_y,
+        lookback=lookback,
     )
 
     print("[2/3] Running Monte Carlo simulation...")

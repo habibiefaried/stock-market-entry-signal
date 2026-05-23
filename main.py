@@ -201,7 +201,7 @@ def parse_trading_signal(output):
     signal = {}
 
     # Parse signal
-    signal_match = re.search(r'SIGNAL:\s+([A-Z\s()]+)', output)
+    signal_match = re.search(r'SIGNAL:\s+([A-Za-z ()\t]+?)(?:\n|$)', output)
     if signal_match:
         signal['signal'] = signal_match.group(1).strip()
 
@@ -978,25 +978,46 @@ def generate_html_report(results, csv_file, output_file):
                     signal_class = 'signal-hold'
                     signal_badge = f'<span class="signal-badge signal-hold">⏸️ HOLD</span>'
 
+                # Recommendation badge for header
+                rec = signal.get('recommendation', '')
+                if 'TAKE' in rec:
+                    rec_badge = '<span class="signal-badge" style="background:linear-gradient(135deg,#27ae60,#2ecc71);color:#fff;">✓ TAKE TRADE</span>'
+                elif 'SKIP' in rec:
+                    rec_badge = '<span class="signal-badge" style="background:linear-gradient(135deg,#c0392b,#e74c3c);color:#fff;">✗ SKIP TRADE</span>'
+                else:
+                    rec_badge = ''
+
                 html.append('    <div class="model-card">')
                 html.append('        <div class="model-header">')
                 html.append(f'            <div class="model-name">{result["name"]}</div>')
                 html.append(f'            {signal_badge}')
+                if rec_badge:
+                    html.append(f'            {rec_badge}')
                 html.append('        </div>')
 
-                # Stats Grid
+                # Stats Grid — TP probability is the headline stat
                 html.append('        <div class="stats-grid">')
+
+                if 'ensemble_probability' in signal:
+                    prob = signal['ensemble_probability']
+                    if prob >= 75:
+                        prob_color = '#27ae60'
+                    elif prob >= 65:
+                        prob_color = '#f39c12'
+                    else:
+                        prob_color = '#e74c3c'
+                    conf_label = signal.get('confidence_level', '')
+                    html.append('            <div class="stat-box" style="border-left:4px solid ' + prob_color + '; background:rgba(0,0,0,0.02);">')
+                    html.append('                <div class="stat-label">🎯 TP Win Probability</div>')
+                    html.append(f'                <div class="stat-value" style="color:{prob_color};font-size:1.8em;font-weight:800;">{prob:.1f}%</div>')
+                    if conf_label:
+                        html.append(f'                <div style="font-size:0.75em;color:#7f8c8d;margin-top:2px;">{conf_label} CONFIDENCE</div>')
+                    html.append('            </div>')
 
                 if 'current_price' in signal:
                     html.append('            <div class="stat-box">')
                     html.append('                <div class="stat-label">Current Price</div>')
                     html.append(f'                <div class="stat-value">${signal["current_price"]:,.2f}</div>')
-                    html.append('            </div>')
-
-                if 'predicted_price' in signal:
-                    html.append('            <div class="stat-box">')
-                    html.append('                <div class="stat-label">Predicted Tomorrow</div>')
-                    html.append(f'                <div class="stat-value">${signal["predicted_price"]:,.2f}</div>')
                     html.append('            </div>')
 
                 if 'expected_move' in signal and 'expected_move_pct' in signal:
@@ -1006,53 +1027,65 @@ def generate_html_report(results, csv_file, output_file):
                     html.append(f'                <div class="stat-value" style="color:{move_color}">${signal["expected_move"]:+,.2f} ({signal["expected_move_pct"]:+.2f}%)</div>')
                     html.append('            </div>')
 
+                if 'stop_loss' in signal and 'take_profit' in signal:
+                    html.append('            <div class="stat-box">')
+                    html.append('                <div class="stat-label">SL / TP Levels</div>')
+                    html.append(f'                <div class="stat-value" style="color:#e74c3c;font-size:0.95em;">SL ${signal["stop_loss"]:,.2f} ({signal.get("stop_loss_pct",0):+.1f}%)</div>')
+                    html.append(f'                <div class="stat-value" style="color:#27ae60;font-size:0.95em;">TP ${signal["take_profit"]:,.2f} ({signal.get("take_profit_pct",0):+.1f}%)</div>')
+                    html.append('            </div>')
+
                 if 'confidence' in signal:
                     html.append('            <div class="stat-box">')
                     html.append('                <div class="stat-label">Model Confidence</div>')
                     html.append(f'                <div class="stat-value">{signal["confidence"]:.1f}%</div>')
+                    if 'predicted_price' in signal:
+                        html.append(f'                <div style="font-size:0.75em;color:#7f8c8d;margin-top:2px;">Pred. tomorrow: ${signal["predicted_price"]:,.2f}</div>')
                     html.append('            </div>')
 
                 html.append('        </div>')
 
-                # Risk Management Table
-                html.append('        <h4 style="margin-top:25px; color:#2c3e50;">Risk Management (5x Leverage)</h4>')
-                html.append('        <table>')
-                html.append('            <tr>')
-                html.append('                <th>Parameter</th>')
-                html.append('                <th>Stock Price Level</th>')
-                html.append('                <th>Stock Move %</th>')
-                html.append('                <th>Position P&L (5x)</th>')
-                html.append('            </tr>')
-
-                if 'stop_loss' in signal and 'stop_loss_pct' in signal:
-                    leverage_pct = signal['stop_loss_pct'] * 5
+                # Leverage table (5x P&L)
+                if ('stop_loss' in signal and 'stop_loss_pct' in signal) or \
+                   ('take_profit' in signal and 'take_profit_pct' in signal) or \
+                   ('volatility' in signal):
+                    html.append('        <h4 style="margin-top:25px; color:#2c3e50;">5x Leverage Position P&L</h4>')
+                    html.append('        <table>')
                     html.append('            <tr>')
-                    html.append('                <td><strong>Stop Loss</strong></td>')
-                    html.append(f'                <td>${signal["stop_loss"]:,.2f}</td>')
-                    html.append(f'                <td>{signal["stop_loss_pct"]:+.2f}%</td>')
-                    html.append(f'                <td style="color:#e74c3c; font-weight:700;">{leverage_pct:+.1f}%</td>')
+                    html.append('                <th>Parameter</th>')
+                    html.append('                <th>Stock Price Level</th>')
+                    html.append('                <th>Stock Move %</th>')
+                    html.append('                <th>Position P&L (5x)</th>')
                     html.append('            </tr>')
 
-                if 'take_profit' in signal and 'take_profit_pct' in signal:
-                    leverage_pct = signal['take_profit_pct'] * 5
-                    html.append('            <tr>')
-                    html.append('                <td><strong>Take Profit</strong></td>')
-                    html.append(f'                <td>${signal["take_profit"]:,.2f}</td>')
-                    html.append(f'                <td>{signal["take_profit_pct"]:+.2f}%</td>')
-                    html.append(f'                <td style="color:#27ae60; font-weight:700;">{leverage_pct:+.1f}%</td>')
-                    html.append('            </tr>')
+                    if 'stop_loss' in signal and 'stop_loss_pct' in signal:
+                        leverage_pct = signal['stop_loss_pct'] * 5
+                        html.append('            <tr>')
+                        html.append('                <td><strong>Stop Loss</strong></td>')
+                        html.append(f'                <td>${signal["stop_loss"]:,.2f}</td>')
+                        html.append(f'                <td>{signal["stop_loss_pct"]:+.2f}%</td>')
+                        html.append(f'                <td style="color:#e74c3c; font-weight:700;">{leverage_pct:+.1f}%</td>')
+                        html.append('            </tr>')
 
-                if 'volatility' in signal:
-                    html.append('            <tr>')
-                    html.append('                <td><strong>Daily Volatility</strong></td>')
-                    html.append(f'                <td>${signal["volatility"]:,.2f}</td>')
-                    html.append('                <td>-</td>')
-                    html.append('                <td>-</td>')
-                    html.append('            </tr>')
+                    if 'take_profit' in signal and 'take_profit_pct' in signal:
+                        leverage_pct = signal['take_profit_pct'] * 5
+                        html.append('            <tr>')
+                        html.append('                <td><strong>Take Profit</strong></td>')
+                        html.append(f'                <td>${signal["take_profit"]:,.2f}</td>')
+                        html.append(f'                <td>{signal["take_profit_pct"]:+.2f}%</td>')
+                        html.append(f'                <td style="color:#27ae60; font-weight:700;">{leverage_pct:+.1f}%</td>')
+                        html.append('            </tr>')
 
-                html.append('        </table>')
+                    if 'volatility' in signal:
+                        html.append('            <tr>')
+                        html.append('                <td><strong>Daily Volatility</strong></td>')
+                        html.append(f'                <td>${signal["volatility"]:,.2f}</td>')
+                        html.append('                <td>-</td>')
+                        html.append('                <td>-</td>')
+                        html.append('            </tr>')
 
-                # Probability Analysis
+                    html.append('        </table>')
+
+                # Probability Analysis (detailed breakdown)
                 prob_html = generate_probability_html(signal)
                 if prob_html:
                     html.append(prob_html)
@@ -1068,10 +1101,14 @@ def generate_html_report(results, csv_file, output_file):
         buy_count = 0
         short_count = 0
         hold_count = 0
+        take_count = 0
+        skip_count = 0
+        tp_probs = []
 
         for result in successful_models:
             signal = parse_trading_signal(result['output'])
             signal_text = signal.get('signal', '')
+            rec = signal.get('recommendation', '')
 
             if 'BUY' in signal_text:
                 buy_count += 1
@@ -1080,17 +1117,40 @@ def generate_html_report(results, csv_file, output_file):
             else:
                 hold_count += 1
 
+            if 'TAKE' in rec:
+                take_count += 1
+            elif 'SKIP' in rec:
+                skip_count += 1
+
+            if 'ensemble_probability' in signal:
+                tp_probs.append(signal['ensemble_probability'])
+
         total = len(successful_models)
+        avg_tp_prob = sum(tp_probs) / len(tp_probs) if tp_probs else None
+
         html.append(f"- **BUY signals:** {buy_count}/{total} ({buy_count/total*100:.0f}%)")
         html.append(f"- **SHORT signals:** {short_count}/{total} ({short_count/total*100:.0f}%)")
-        html.append(f"- **HOLD signals:** {hold_count}/{total} ({hold_count/total*100:.0f}%)\n")
+        html.append(f"- **HOLD signals:** {hold_count}/{total} ({hold_count/total*100:.0f}%)")
+        if avg_tp_prob is not None:
+            html.append(f"- **Avg TP Win Probability:** {avg_tp_prob:.1f}% ({take_count} TAKE / {skip_count} SKIP across {len(tp_probs)} models)\n")
+        else:
+            html.append("")
 
         if buy_count > total / 2:
-            html.append("**Consensus: BUY [UP]** - Majority of models predict upward movement")
+            dir_text = "**Consensus Direction: BUY [UP]** - Majority of models predict upward movement"
         elif short_count > total / 2:
-            html.append("**Consensus: SHORT [DOWN]** - Majority of models predict downward movement")
+            dir_text = "**Consensus Direction: SHORT [DOWN]** - Majority of models predict downward movement"
         else:
-            html.append("**Consensus: MIXED** - No clear majority, proceed with caution")
+            dir_text = "**Consensus Direction: MIXED** - No clear majority, proceed with caution"
+        html.append(dir_text)
+
+        if avg_tp_prob is not None:
+            if take_count > total / 2 and avg_tp_prob >= 65:
+                html.append(f"**Trade Recommendation: TAKE TRADE** - {take_count}/{total} models agree, avg {avg_tp_prob:.1f}% TP probability")
+            elif skip_count > total / 2 or avg_tp_prob < 60:
+                html.append(f"**Trade Recommendation: SKIP TRADE** - avg TP probability {avg_tp_prob:.1f}% is too low")
+            else:
+                html.append(f"**Trade Recommendation: CAUTION** - Models disagree ({take_count} take / {skip_count} skip), avg {avg_tp_prob:.1f}%")
 
         html.append("")
 
