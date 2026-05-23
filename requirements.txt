@@ -4,6 +4,7 @@ yfinance>=0.2.50
 # Data processing
 pandas>=2.2.0
 numpy>=1.26.0,<2.0.0
+scipy>=1.13.0
 
 # Machine Learning
 scikit-learn>=1.5.0
@@ -19,10 +20,10 @@ matplotlib>=3.9.0
 # Utilities
 joblib>=1.4.0
 
-# Deep Learning (for CPU training)
-# tensorflow>=2.18.0
-# keras>=3.7.0
-
-# For Windows GPU support (Python 3.11 only):
-# Install separately: pip install tensorflow-directml keras
-# Note: tensorflow-directml does NOT support Python 3.12+
+# Deep Learning — PyTorch backend for Keras
+# GPU (CUDA 12.x):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# CPU only:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+torch>=2.2.0
+keras>=3.7.0
