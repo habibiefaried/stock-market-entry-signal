@@ -231,3 +231,4 @@ __marimo__/
 train_arima.py
 *.txt
 *.npz
+*.pt
