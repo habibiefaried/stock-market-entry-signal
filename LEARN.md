@@ -717,18 +717,22 @@ Each of the 7 models produces a signal (BUY/SHORT/HOLD) and a TP win probability
 
 ### 18.2 State, Action, Reward
 
-**State vector (12 dimensions):**
+**State vector (16 dimensions):**
 ```
-[xgboost_signal, xgboost_prob,
- xgboost_heavy_signal, xgboost_heavy_prob,
- lightgbm_signal, lightgbm_prob,
+[xgboost_signal,        xgboost_prob,
+ xgboost_heavy_signal,  xgboost_heavy_prob,
+ lightgbm_signal,       lightgbm_prob,
  lightgbm_heavy_signal, lightgbm_heavy_prob,
- randomforest_signal, randomforest_prob,
- (RSI_14 - 50) / 50,      # normalised RSI
- trend]                    # (Close - SMA20) / SMA20
+ randomforest_signal,   randomforest_prob,
+ lstm_signal,           lstm_prob,      <- reads lstm_signal.txt (written by train_lstm.py)
+ tft_signal,            tft_prob,       <- reads tft_signal.txt  (written by train_tft.py)
+ (RSI_14 - 50) / 50,                   <- normalised RSI
+ trend]                                 <- (Close - SMA20) / SMA20
 ```
 
 Signals are encoded: LONG=1, SHORT=-1, HOLD=0.
+
+The `prob` for LSTM and TFT uses the **per-trade ensemble probability** (Monte Carlo + pattern match + sequential prediction) written by those model scripts -- not a static test-set accuracy. This is higher quality than the tree model probs, which scale with predicted move magnitude.
 
 **Actions:**
 - `LONG (0)`: go long, hold until TP or SL
@@ -737,11 +741,19 @@ Signals are encoded: LONG=1, SHORT=-1, HOLD=0.
 
 **Rewards:**
 ```
-TP hit first  -> +1.67   (matches the 1.67:1 risk/reward ratio)
+TP hit first  -> +1.67   (matches 1.5x ATR take-profit vs 1.0x ATR stop-loss)
 SL hit first  -> -1.0
 Each day held ->  -0.05  (cost of holding without resolution)
 Max 5 days    (then episode ends as TIMEOUT)
 ```
+
+**TP/SL levels** (consistent across all model scripts and the RL environment):
+```
+Stop Loss   = entry +/- 1.0 * ATR_14
+Take Profit = entry +/- 1.5 * ATR_14
+Risk/Reward = 1.5:1
+```
+Using ATR_14 instead of rolling return-std captures intraday gap risk that return-std misses. The RL reward ratio (1.67) approximates the ATR-based R:R of 1.5 -- they are close enough that the agent's learned policy transfers correctly to live levels.
 
 ### 18.3 Double Walk-Forward Validation
 
@@ -784,9 +796,26 @@ The clip prevents the new policy from deviating too far from the old one in a si
 
 Early in training (with limited data), these targets may not be met. The agent needs 8-15 years of data to see full market cycles (bull, crash, recovery, sideways).
 
-### 18.6 Fallback When No PKL Models Exist
+### 18.6 Signal File Loading (LSTM / TFT)
 
-If the 7 model `.pkl` files have not been trained yet, `_synthetic_signals()` generates proxy signals from the raw indicators (RSI, MACD, trend). This allows `agent_trader.py` to run standalone for testing, but the quality will be lower than when real model outputs are used.
+LSTM and TFT cannot be loaded by the RL agent like pkl files (they require Keras with custom layers). Instead, when they finish training they write a small text file:
+
+```
+lstm_signal.txt
+  signal: 1          (1=LONG, -1=SHORT, 0=HOLD)
+  prob: 0.73         (directional probability)
+  ensemble_prob: 68.4  (weighted average of 3-method probability analysis)
+```
+
+The RL agent reads this file at startup. If the file does not exist (LSTM/TFT not yet trained), those two slots in the state vector default to 0/0.5 (neutral).
+
+### 18.7 Weight Persistence
+
+After each training run, the PPO weights are saved to `rl_agent_weights.npz`. On the next run with the same CSV file (same size and row count), the agent warm-starts from those weights instead of random initialisation. This means the second run is faster and the agent starts from a better policy. A new CSV (different ticker or date range) triggers full retraining.
+
+### 18.8 Fallback When No PKL Models Exist
+
+If the 7 model `.pkl` files have not been trained yet, `_synthetic_signals()` generates proxy signals from the raw indicators (RSI, MACD, trend) for all 7 model slots. This allows `agent_trader.py` to run standalone for testing, but the quality will be lower than when real model outputs are used.
 
 ---
 
@@ -855,7 +884,7 @@ The report is built as a list of strings, then joined and written to disk. The R
 | `train_lightgbm.py` | LightGBM baseline (5 OHLCV features) | `lightgbm_model.pkl`, `lightgbm_scaler.pkl`, `lightgbm_features.txt` |
 | `train_lightgbm_heavy.py` | LightGBM with 38 features (max 2 per indicator family), 3000 trees, num_leaves=63 | `lightgbm_heavy_model.pkl`, `lightgbm_heavy_scaler.pkl`, `lightgbm_heavy_features.txt` |
 | `train_randomforest.py` | Random Forest with walk-forward validation | `randomforest_model.pkl`, `randomforest_scaler.pkl`, `randomforest_features.txt` |
-| `agent_trader.py` | PPO RL meta-agent: reads all model signals, outputs LONG/SHORT/HOLD | (no saved model -- re-trains each run) |
+| `agent_trader.py` | PPO RL meta-agent: reads all 7 model signals (incl. LSTM/TFT via signal files), outputs LONG/SHORT/HOLD | `rl_agent_weights.npz` (warm-start on next run) |
 | `trade_probability_analyzer.py` | Three-approach win probability analysis, called by all model scripts | (no file output -- returns results) |
 | `test_gpu.py` | Quick GPU availability check | (stdout only) |
 
@@ -925,6 +954,22 @@ yfinance produces this format automatically.
 ### Undefined loop variable when loop body is empty
 **Wrong**: `for d, fp in enumerate(futures): ...` then `d + 1` after -- `d` is unbound if `futures` is empty.
 **Right**: initialise `days_out = 1` before the loop and set `days_out = d + 1` inside.
+
+### TP/SL inconsistency between model scripts and RL environment
+**Wrong**: model scripts use `0.6 * return_std * price` for SL and `1.0 * return_std * price` for TP, while the RL environment uses different multipliers. The agent learns to hit a TP defined differently from what the models use.
+**Right**: all model scripts and the RL `TradingEnv.step()` use `SL = 1.0 * ATR_14`, `TP = 1.5 * ATR_14`. ATR_14 captures intraday gap risk that return-std misses and is the industry-standard measure for position sizing.
+
+### RL agent misses the two strongest models
+**Wrong**: `load_model_predictions()` only loads `.pkl` files. LSTM and TFT save `.keras` files with custom layers -- trying to load them the same way would require importing Keras + custom objects at agent startup.
+**Right**: LSTM and TFT write `lstm_signal.txt` / `tft_signal.txt` at the end of their training runs. The RL agent reads these files. The state vector grows from 12 to 16 dims to include both.
+
+### Static per-model confidence (test accuracy) in RL state
+**Wrong**: using `test_acc * 100` as the `prob` fed into the RL state for every single episode. This is a one-time number that never changes -- the agent can't distinguish high-confidence from low-confidence signals.
+**Right**: use per-trade probabilities where available (ensemble_prob from trade_probability_analyzer for LSTM/TFT) and move magnitude scaling for tree models. Each row in the training data then has a different prob, which is what the RL agent needs to learn from.
+
+### Fixed signal threshold ignores asset volatility
+**Wrong**: `if expected_move_pct > 0.5:` -- a 0.5% threshold means TSLA (3% daily vol) generates signals on nearly every day while JNJ (0.5% daily vol) generates very few.
+**Right**: `sig_threshold = max(0.3 * vol_20d_pct, 0.3)`. The threshold scales with each asset's own volatility so signal frequency is consistent across tickers.
 
 ### Feature multicollinearity in tree models (max-2-per-family rule)
 **Wrong**: including RSI_7, RSI_14, RSI_21 in the same model. All three carry essentially the same signal -- fast/slow RSI. The tree wastes splits arbitrating between them.

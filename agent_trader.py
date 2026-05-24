@@ -107,6 +107,29 @@ def load_model_predictions(csv_file):
         'randomforest':   ('randomforest_model.pkl',   'randomforest_scaler.pkl',   'randomforest_features.txt'),
     }
 
+    # Load LSTM and TFT signals from their saved signal files (written after training)
+    neural_signals = {}
+    for nn_name, sig_file in [('lstm', 'lstm_signal.txt'), ('tft', 'tft_signal.txt')]:
+        sig_path = os.path.join(base_dir, sig_file)
+        if os.path.exists(sig_path):
+            try:
+                sig_data = {}
+                with open(sig_path) as fh:
+                    for line in fh:
+                        k, v = line.strip().split(':', 1)
+                        sig_data[k.strip()] = v.strip()
+                neural_signals[nn_name] = {
+                    'signal':       int(float(sig_data.get('signal', 0))),
+                    'prob':         float(sig_data.get('prob', 0.5)),
+                    'ensemble_prob': float(sig_data.get('ensemble_prob', 50.0)) / 100.0,
+                }
+                print(f"  Loaded {nn_name} signal: {neural_signals[nn_name]['signal']} "
+                      f"(prob={neural_signals[nn_name]['prob']:.2f})")
+            except Exception as e:
+                print(f"  Could not read {nn_name} signal file: {e}")
+        else:
+            print(f"  {sig_file} not found - {nn_name} signal will be neutral")
+
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
     loaded_models = {}
@@ -138,6 +161,7 @@ def load_model_predictions(csv_file):
         row = {'date': df_raw['Date'].iloc[i] if 'Date' in df_raw.columns else i,
                'close': df_raw['Close'].iloc[i],
                'rsi': df_raw['RSI_14'].iloc[i],
+               'atr': df_raw['ATR_14'].iloc[i],
                'volatility': df_raw['Volatility'].iloc[i],
                'trend': df_raw['Trend'].iloc[i],
                'actual_next_close': df_raw['Close'].iloc[i + 1]}
@@ -171,11 +195,21 @@ def load_model_predictions(csv_file):
                 row[f'{name}_signal'] = 0
                 row[f'{name}_prob']   = 0.5
 
-        # Fill missing models with neutral
+        # Fill missing pkl models with neutral
         for name in model_files:
             if f'{name}_signal' not in row:
                 row[f'{name}_signal'] = 0
                 row[f'{name}_prob']   = 0.5
+
+        # Inject LSTM / TFT signals (same value every row -- they produce one signal per run)
+        for nn_name, nn_data in neural_signals.items():
+            row[f'{nn_name}_signal'] = nn_data['signal']
+            # Use per-trade ensemble_prob if available, else fall back to directional prob
+            row[f'{nn_name}_prob']   = nn_data['ensemble_prob'] if nn_data['ensemble_prob'] > 0.0 else nn_data['prob']
+        for nn_name in ['lstm', 'tft']:
+            if f'{nn_name}_signal' not in row:
+                row[f'{nn_name}_signal'] = 0
+                row[f'{nn_name}_prob']   = 0.5
 
         records.append(row)
 
@@ -222,9 +256,9 @@ def _synthetic_signals(df_raw):
         vol  = df_raw['Volatility'].iloc[i]
         tr   = df_raw['Trend'].iloc[i]
 
-        # 5 synthetic model proxies with slight random noise
+        # 7 synthetic model proxies with slight random noise
         np.random.seed(i)
-        noise = np.random.normal(0, 0.05, 5)
+        noise = np.random.normal(0, 0.05, 7)
 
         def _sig(score):
             if score > 0.1:  return 1
@@ -235,18 +269,21 @@ def _synthetic_signals(df_raw):
             return float(np.clip(0.5 + abs(score) * 0.5, 0.5, 0.95))
 
         scores = [
-            (rsi - 50) / 50 + noise[0],          # RSI-based
-            macd / (abs(macd) + 1e-5) * 0.5 + noise[1],  # MACD
-            tr * 2 + noise[2],                    # trend
+            (rsi - 50) / 50 + noise[0],
+            macd / (abs(macd) + 1e-5) * 0.5 + noise[1],
+            tr * 2 + noise[2],
             (rsi - 50) / 50 * 0.7 + tr + noise[3],
             macd / (abs(macd) + 1e-5) * 0.3 + tr * 0.5 + noise[4],
+            (rsi - 50) / 50 * 0.6 + macd / (abs(macd) + 1e-5) * 0.4 + noise[5],  # lstm proxy
+            tr * 1.5 + macd / (abs(macd) + 1e-5) * 0.5 + noise[6],               # tft proxy
         ]
 
-        names = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy', 'randomforest']
+        names = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy', 'randomforest', 'lstm', 'tft']
         row   = {
             'date':              df_raw['Date'].iloc[i] if 'Date' in df_raw.columns else i,
             'close':             df_raw['Close'].iloc[i],
             'rsi':               rsi,
+            'atr':               df_raw['ATR_14'].iloc[i],
             'volatility':        vol,
             'trend':             tr,
             'actual_next_close': df_raw['Close'].iloc[i + 1],
@@ -264,13 +301,14 @@ def _synthetic_signals(df_raw):
 # STATE BUILDER
 # ---------------------------------------------------------------------------
 
-MODEL_NAMES = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy', 'randomforest']
+MODEL_NAMES = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy', 'randomforest',
+               'lstm', 'tft']
 
 def build_state(row):
     """
-    State vector (12 dims):
-      5 model signals    (encoded: LONG=1, SHORT=-1, HOLD=0)
-      5 model probs      (0..1)
+    State vector (16 dims):
+      7 model signals    (encoded: LONG=1, SHORT=-1, HOLD=0)
+      7 model probs      (0..1, uses per-trade ensemble prob where available)
       RSI_14 normalised  (-1..1 mapped from 0..100)
       Trend              (already a ratio)
     """
@@ -283,8 +321,8 @@ def build_state(row):
     return np.array(state, dtype=np.float32)
 
 
-STATE_DIM  = 12
-ACTION_DIM = 3   # LONG, SHORT, HOLD
+STATE_DIM  = 16   # 7 models x 2 (signal+prob) + RSI + trend
+ACTION_DIM = 3    # LONG, SHORT, HOLD
 
 
 # ---------------------------------------------------------------------------
@@ -409,12 +447,13 @@ class TradingEnv:
         return self.state
 
     def step(self, action):
-        row        = self.signals_df.iloc[self.ep_idx]
-        close      = float(row['close'])
-        volatility = max(float(row.get('volatility', 1.0)), 0.1)
+        row   = self.signals_df.iloc[self.ep_idx]
+        close = float(row['close'])
 
-        sl_dist    = 0.6 * volatility / 100 * close
-        tp_dist    = 1.0 * volatility / 100 * close
+        # ATR-based TP/SL: more robust than return-std (consistent with model scripts)
+        atr    = max(float(row.get('atr', 0.0)), 0.01 * close)  # fallback: 1% of price
+        sl_dist = 1.0 * atr
+        tp_dist = 1.5 * atr
 
         if action == ACTION_HOLD:
             reward = REWARD_HOLD
@@ -482,22 +521,31 @@ class TradingEnv:
 def build_lookahead(signals_df, df_raw):
     """
     For each row in signals_df, build the list of future close prices (up to MAX_DAYS).
+    Matches signals_df rows to df_raw by date string; falls back to integer index if
+    date lookup fails (handles format differences between Windows/Mac path styles).
     """
+    # Build date->index map with normalised string keys
     date_to_raw_idx = {}
     if 'Date' in df_raw.columns:
         for i, d in enumerate(df_raw['Date']):
-            date_to_raw_idx[str(d)] = i
+            date_to_raw_idx[str(d).strip()] = i
 
     lookahead = {}
     for row_i, row in signals_df.iterrows():
-        if 'Date' in signals_df.columns:
-            raw_i = date_to_raw_idx.get(str(row['date']), None)
-        else:
-            raw_i = int(row.get('date', row_i))
+        raw_i = None
 
+        # Try date-based lookup first
+        if 'date' in signals_df.columns:
+            raw_i = date_to_raw_idx.get(str(row['date']).strip(), None)
+
+        # Fallback: use the integer value stored in 'date' when no Date column existed
         if raw_i is None:
-            lookahead[row_i] = []
-            continue
+            try:
+                raw_i = int(row.get('date', row_i))
+                if raw_i >= len(df_raw):
+                    raw_i = row_i
+            except (ValueError, TypeError):
+                raw_i = row_i
 
         futures = []
         for d in range(1, MAX_DAYS + 1):
@@ -505,6 +553,10 @@ def build_lookahead(signals_df, df_raw):
             if idx < len(df_raw):
                 futures.append(float(df_raw['Close'].iloc[idx]))
         lookahead[row_i] = futures
+
+    n_empty = sum(1 for v in lookahead.values() if len(v) == 0)
+    if n_empty > 0:
+        print(f"  Warning: {n_empty} lookahead rows have no future prices (end of data)")
 
     return lookahead
 
@@ -675,11 +727,11 @@ def get_current_action(signals_df, df_raw, policy):
     state      = build_state(last_row)
     action, prob, _ = policy.act_greedy(state)
 
-    # Estimate SL/TP from last price
-    close      = float(last_row['close'])
-    volatility = max(float(last_row.get('volatility', 1.0)), 0.1)
-    sl_dist    = 0.6 * volatility / 100 * close
-    tp_dist    = 1.0 * volatility / 100 * close
+    # ATR-based SL/TP (consistent with training environment and model scripts)
+    close   = float(last_row['close'])
+    atr     = max(float(last_row.get('atr', 0.0)), 0.01 * close)
+    sl_dist = 1.0 * atr
+    tp_dist = 1.5 * atr
 
     if action == ACTION_LONG:
         sl = close - sl_dist
@@ -758,8 +810,29 @@ def run_agent(csv_file):
     # Layer 2: PPO training on walk-forward signals
     print("\n[STEP 3/4] Training PPO agent (walk-forward layer 2)...")
     np.random.seed(42)
-    policy     = PPOPolicy()
-    train_env  = TradingEnv(train_sig, train_la)
+    policy    = PPOPolicy(state_dim=STATE_DIM)
+    train_env = TradingEnv(train_sig, train_la)
+
+    # Warm-start from saved weights if they exist (same CSV = same data fingerprint)
+    weights_file = os.path.join(base_dir, 'rl_agent_weights.npz')
+    csv_hash_file = os.path.join(base_dir, 'rl_agent_csv_hash.txt')
+    csv_hash = str(os.path.getsize(csv_file)) + '_' + str(n_records)
+    if os.path.exists(weights_file) and os.path.exists(csv_hash_file):
+        try:
+            with open(csv_hash_file) as fh:
+                saved_hash = fh.read().strip()
+            if saved_hash == csv_hash:
+                w = np.load(weights_file)
+                policy.W1 = w['W1']; policy.b1 = w['b1']
+                policy.W2 = w['W2']; policy.b2 = w['b2']
+                policy.W3 = w['W3']; policy.b3 = w['b3']
+                policy.Wv1 = w['Wv1']; policy.bv1 = w['bv1']
+                policy.Wv2 = w['Wv2']; policy.bv2 = w['bv2']
+                print("  Warm-started from saved weights (same CSV)")
+            else:
+                print("  CSV changed - training from scratch")
+        except Exception as e:
+            print(f"  Could not load saved weights: {e}")
 
     n_ep = min(max(len(train_sig) * 10, 4000), 30000)
     # Timing estimate: pure-numpy PPO runs ~5000-10000 episodes/sec on CPU
@@ -768,6 +841,17 @@ def run_agent(csv_file):
     ep_rewards, outcomes = train_ppo(train_env, policy, n_episodes=n_ep)
     print(f"  Training outcomes: TP={outcomes.get('TP',0)} SL={outcomes.get('SL',0)} "
           f"HOLD={outcomes.get('HOLD',0)} TIMEOUT={outcomes.get('TIMEOUT',0)}")
+
+    # Persist weights for warm-start on next run with same CSV
+    try:
+        np.savez(weights_file,
+                 W1=policy.W1, b1=policy.b1, W2=policy.W2, b2=policy.b2,
+                 W3=policy.W3, b3=policy.b3, Wv1=policy.Wv1, bv1=policy.bv1,
+                 Wv2=policy.Wv2, bv2=policy.bv2)
+        with open(csv_hash_file, 'w') as fh:
+            fh.write(csv_hash)
+    except Exception as e:
+        print(f"  Warning: could not save weights: {e}")
 
     # Backtest on validation set
     print("\n[STEP 4/4] Backtesting on validation set...")

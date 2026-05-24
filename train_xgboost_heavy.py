@@ -393,21 +393,25 @@ def train_xgboost_heavy_model(
     expected_move     = tomorrow_pred - today_price
     expected_move_pct = (expected_move / today_price) * 100
 
-    if expected_move_pct > 0.5:
+    # Adaptive threshold: 0.3x daily vol (min 0.3%) so noisy stocks need larger moves
+    vol_20d_pct    = df['Volatility_20d'].iloc[-1]   # already in % units
+    sig_threshold  = max(0.3 * vol_20d_pct, 0.3)
+
+    if expected_move_pct > sig_threshold:
         signal       = "BUY (LONG)"
         signal_emoji = "[BUY]"
-    elif expected_move_pct < -0.5:
+    elif expected_move_pct < -sig_threshold:
         signal       = "SHORT (SELL)"
         signal_emoji = "[SHORT]"
     else:
         signal       = "HOLD (No clear signal)"
         signal_emoji = "[HOLD]"
 
-    recent_prices = df[['Close']].tail(20)['Close']
-    volatility    = recent_prices.pct_change().dropna().std() * today_price
-
-    stop_loss_distance   = 0.6 * volatility
-    take_profit_distance = 1.0 * volatility
+    # ATR-based TP/SL: more robust than return-std (captures gap risk)
+    atr = float(df['ATR_14'].iloc[-1])
+    stop_loss_distance   = 1.0 * atr
+    take_profit_distance = 1.5 * atr
+    volatility           = df[['Close']].tail(20)['Close'].pct_change().dropna().std() * today_price
 
     if signal == "BUY (LONG)":
         stop_loss   = today_price - stop_loss_distance

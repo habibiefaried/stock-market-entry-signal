@@ -391,27 +391,27 @@ def train_xgboost_model(csv_file, n_estimators=1000, learning_rate=0.01, max_dep
     expected_move = tomorrow_pred - today_price
     expected_move_pct = (expected_move / today_price) * 100
 
-    # Determine signal
-    if expected_move_pct > 0.5:
+    # Adaptive threshold: 0.3x daily vol (min 0.3%)
+    recent_ret_pct = df['Close'].pct_change().tail(20).std() * 100
+    sig_threshold  = max(0.3 * recent_ret_pct, 0.3)
+
+    if expected_move_pct > sig_threshold:
         signal = "BUY (LONG)"
         signal_emoji = "[BUY]"
-    elif expected_move_pct < -0.5:
+    elif expected_move_pct < -sig_threshold:
         signal = "SHORT (SELL)"
         signal_emoji = "[SHORT]"
     else:
         signal = "HOLD (No clear signal)"
         signal_emoji = "[HOLD]"
 
-    # Calculate stop loss and take profit using recent volatility
-    recent_prices = df[['Close']].tail(20)['Close']
-    daily_returns = recent_prices.pct_change().dropna()
-    volatility = daily_returns.std() * today_price
-
-    # SWING TRADING MODE (1-2 day trades with 5x leverage)
-    # Stop Loss: 0.6x volatility (~1.5% stock move = 7.5% position loss)
-    # Take Profit: 1.0x volatility (~2.5% stock move = 12.5% position gain)
-    stop_loss_distance = 0.6 * volatility
-    take_profit_distance = 1.0 * volatility
+    # ATR-based TP/SL
+    h, l, c = df['High'], df['Low'], df['Close']
+    tr  = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+    atr = float(tr.ewm(span=14, min_periods=14).mean().iloc[-1])
+    stop_loss_distance   = 1.0 * atr
+    take_profit_distance = 1.5 * atr
+    volatility           = df['Close'].tail(20).pct_change().dropna().std() * today_price
 
     if signal == "BUY (LONG)":
         stop_loss = today_price - stop_loss_distance
