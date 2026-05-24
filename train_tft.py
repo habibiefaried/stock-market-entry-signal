@@ -495,7 +495,7 @@ def calculate_direction_metrics(y_true, y_pred):
 def train_tft_model(
     csv_file,
     lookback=60,
-    epochs=150,
+    epochs=75,
     batch_size=32,
     # CNN
     cnn1_filters=64,
@@ -563,7 +563,7 @@ def train_tft_model(
 
     # -- Callbacks ------------------------------------------------------------
     early_stop = EarlyStopping(
-        monitor='val_loss', patience=15,
+        monitor='val_loss', patience=10,
         restore_best_weights=True, verbose=0
     )
     checkpoint = ModelCheckpoint(
@@ -572,12 +572,12 @@ def train_tft_model(
     )
     reduce_lr = ReduceLROnPlateau(
         monitor='val_loss', factor=0.5,
-        patience=7, min_lr=1e-6, verbose=0
+        patience=5, min_lr=1e-6, verbose=0
     )
 
     # -- Train -----------------------------------------------------------------
     print(f"\nTraining CNN-TFT on {_device}...")
-    print("This may take 3-8 minutes with GPU, 15-30 minutes with CPU")
+    print("This may take 2-5 minutes with GPU, 8-15 minutes with CPU")
 
     history = model.fit(
         X_train, y_train,
@@ -851,7 +851,7 @@ Architecture parameters:
     )
     parser.add_argument('csv_file',          type=str)
     parser.add_argument('--lookback',        type=int,   default=60)
-    parser.add_argument('--epochs',          type=int,   default=150)
+    parser.add_argument('--epochs',          type=int,   default=75)
     parser.add_argument('--batch_size',      type=int,   default=32)
     # CNN
     parser.add_argument('--cnn1_filters',    type=int,   default=64)
