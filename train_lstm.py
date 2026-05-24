@@ -2,10 +2,10 @@
 CNN-1D + LSTM Stock Price Prediction Model
 
 Architecture:
-  1. Technical Indicator Engine  — 50+ signals (RSI, MACD, MA, BB, ATR, Stoch, OBV, CCI, etc.)
-  2. CNN-1D Feature Extractor    — learns local patterns across indicator channels
-  3. LSTM Sequence Learner       — learns temporal dependencies in extracted features
-  4. Dense Head                  — outputs tomorrow's closing price
+  1. Technical Indicator Engine  - 50+ signals (RSI, MACD, MA, BB, ATR, Stoch, OBV, CCI, etc.)
+  2. CNN-1D Feature Extractor    - learns local patterns across indicator channels
+  3. LSTM Sequence Learner       - learns temporal dependencies in extracted features
+  4. Dense Head                  - outputs tomorrow's closing price
 
 Why CNN before LSTM?
   - CNN: detects short-range cross-indicator patterns (e.g. RSI divergence + BB squeeze)
@@ -116,7 +116,7 @@ def compute_technical_indicators(df):
       - MA Ratios         : Close / SMAx normalised
       - RSI               : periods 7, 14, 21
       - MACD              : fast 12 / slow 26 / signal 9
-      - Bollinger Bands   : 20-period, ±2 std  (+%B and bandwidth)
+      - Bollinger Bands   : 20-period, +/-2 std  (+%B and bandwidth)
       - ATR               : periods 7, 14
       - Stochastic        : %K(14,3), %D
       - OBV               : on-balance volume
@@ -301,7 +301,7 @@ class TemporalAttention(Layer):
 
     Given LSTM output  H  of shape (batch, timesteps, units), the layer
     learns a scalar importance weight for each timestep, then returns the
-    weighted sum — a single context vector of shape (batch, units).
+    weighted sum - a single context vector of shape (batch, units).
 
     Why this helps:
       Not every day in the 60-day lookback window matters equally.
@@ -310,9 +310,9 @@ class TemporalAttention(Layer):
       carry the most signal, ignoring the rest.
 
     Maths:
-      e_t = tanh(W · h_t + b)   [score for each timestep]
+      e_t = tanh(W . h_t + b)   [score for each timestep]
       a_t = softmax(e_t)         [normalised attention weights]
-      c   = Σ a_t · h_t          [context vector]
+      c   = sum a_t . h_t          [context vector]
     """
 
     def __init__(self, **kwargs):
@@ -353,7 +353,7 @@ def build_cnn_lstm_model(
     # CNN block 1
     cnn1_filters=64,
     cnn1_kernel=3,
-    # CNN block 2  (wider by default — more cross-indicator pattern capacity)
+    # CNN block 2  (wider by default - more cross-indicator pattern capacity)
     cnn2_filters=256,
     cnn2_kernel=5,
     # CNN block 3
@@ -381,10 +381,10 @@ def build_cnn_lstm_model(
 
     LSTM stack:
       LSTM(lstm1_units, return_sequences=True)  + Dropout
-      LSTM(lstm2_units, return_sequences=True)  + Dropout   ← feeds attention
+      LSTM(lstm2_units, return_sequences=True)  + Dropout   <- feeds attention
 
     Attention:
-      TemporalAttention — learns a soft weight per timestep, collapses the
+      TemporalAttention - learns a soft weight per timestep, collapses the
       sequence to a single context vector.  The model decides which days in the
       lookback window matter most for tomorrow's prediction.
 
@@ -454,7 +454,7 @@ def calculate_direction_metrics(y_true, y_pred):
 def train_lstm_model(
     csv_file,
     lookback=60,
-    epochs=150,
+    epochs=75,
     batch_size=32,
     # CNN hyperparameters
     cnn1_filters=64,
@@ -522,7 +522,7 @@ def train_lstm_model(
 
     # ---- Callbacks ----
     early_stop = EarlyStopping(
-        monitor='val_loss', patience=15,
+        monitor='val_loss', patience=10,
         restore_best_weights=True, verbose=0
     )
     checkpoint = ModelCheckpoint(
@@ -531,12 +531,12 @@ def train_lstm_model(
     )
     reduce_lr = ReduceLROnPlateau(
         monitor='val_loss', factor=0.5,
-        patience=7, min_lr=1e-6, verbose=0
+        patience=5, min_lr=1e-6, verbose=0
     )
 
     # ---- Train ----
     print(f"\nTraining CNN-LSTM on {_device}...")
-    print("This may take 2-5 minutes with GPU, 10-20 minutes with CPU")
+    print("This may take 1-3 minutes with GPU, 5-10 minutes with CPU")
 
     history = model.fit(
         X_train, y_train,
@@ -635,22 +635,27 @@ def train_lstm_model(
     expected_move     = tomorrow_pred - today_price
     expected_move_pct = (expected_move / today_price) * 100
 
-    if expected_move_pct > 0.5:
+    # Adaptive threshold: 0.3x daily vol (min 0.3%)
+    recent_ret_pct = df['Close'].pct_change().tail(20).std() * 100
+    sig_threshold  = max(0.3 * recent_ret_pct, 0.3)
+
+    if expected_move_pct > sig_threshold:
         signal = "BUY (LONG)"
         signal_emoji = "[BUY]"
-    elif expected_move_pct < -0.5:
+    elif expected_move_pct < -sig_threshold:
         signal = "SHORT (SELL)"
         signal_emoji = "[SHORT]"
     else:
         signal = "HOLD (No clear signal)"
         signal_emoji = "[HOLD]"
 
-    recent_prices  = df['Close'].tail(20)
-    daily_returns  = recent_prices.pct_change().dropna()
-    volatility     = daily_returns.std() * today_price
-
-    stop_loss_distance   = 0.6 * volatility
-    take_profit_distance = 1.0 * volatility
+    # ATR-based TP/SL
+    h, l, c_s = df['High'], df['Low'], df['Close']
+    tr  = pd.concat([h - l, (h - c_s.shift()).abs(), (l - c_s.shift()).abs()], axis=1).max(axis=1)
+    atr = float(tr.ewm(span=14, min_periods=14).mean().iloc[-1])
+    stop_loss_distance   = 1.0 * atr
+    take_profit_distance = 1.5 * atr
+    volatility           = df['Close'].tail(20).pct_change().dropna().std() * today_price
 
     if signal == "BUY (LONG)":
         stop_loss   = today_price - stop_loss_distance
@@ -774,6 +779,14 @@ def train_lstm_model(
     print("\nModel saved as: best_lstm_model.keras")
     print("Model info saved as: lstm_model_info.txt")
 
+    # Write signal file for RL agent to read
+    sig_code = 1 if signal == "BUY (LONG)" else (-1 if signal == "SHORT (SELL)" else 0)
+    with open('lstm_signal.txt', 'w') as f:
+        f.write(f"signal: {sig_code}\n")
+        f.write(f"prob: {min(0.5 + abs(expected_move_pct) / 10, 0.95):.4f}\n")
+        f.write(f"ensemble_prob: {ensemble_result['ensemble_probability'] if ensemble_result else 50.0:.1f}\n")
+    print("Signal file saved as: lstm_signal.txt")
+
     return model, history, model_info
 
 
@@ -798,7 +811,7 @@ Architecture parameters:
     )
     parser.add_argument('csv_file', type=str)
     parser.add_argument('--lookback',      type=int,   default=60)
-    parser.add_argument('--epochs',        type=int,   default=150)
+    parser.add_argument('--epochs',        type=int,   default=75)
     parser.add_argument('--batch_size',    type=int,   default=32)
     # CNN
     parser.add_argument('--cnn1_filters',  type=int,   default=64)

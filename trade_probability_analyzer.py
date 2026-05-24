@@ -30,8 +30,8 @@ MC_DRIFT_INFLUENCE = 0.3  # How much predicted trend affects random walk (0-1)
 # Historical Pattern Matching Settings
 PATTERN_LOOKBACK = 200  # How many days to search for similar patterns
 PATTERN_MATCH_COUNT = 50  # Number of similar patterns to find
-RSI_TOLERANCE = 5  # RSI similarity tolerance (±)
-VOLATILITY_TOLERANCE = 0.2  # Volatility similarity tolerance (±20%)
+RSI_TOLERANCE = 5  # RSI similarity tolerance (+/-)
+VOLATILITY_TOLERANCE = 0.2  # Volatility similarity tolerance (+/-20%)
 
 # Ensemble Weights (must sum to 1.0)
 WEIGHT_PREDICTION = 0.4  # Weight for multi-day prediction approach
@@ -442,8 +442,8 @@ def find_similar_patterns(df, current_price, stop_loss, take_profit,
     Then checks: "What happened in the next 5 days? Did TP or SL get hit?"
 
     Similarity scoring:
-    - RSI difference (±5 points is "similar")
-    - Volatility ratio (within ±20% is "similar")
+    - RSI difference (+/-5 points is "similar")
+    - Volatility ratio (within +/-20% is "similar")
     - Recent trend direction (up/down/sideways)
 
     Args:
@@ -692,14 +692,14 @@ def format_analysis_report(prediction_result, monte_carlo_result, pattern_result
 
     if monte_carlo_result:
         report.append(f"Win Probability: {monte_carlo_result['win_rate']:.1f}%")
-        report.append(f"  • {monte_carlo_result['tp_count']} simulations hit Take Profit")
-        report.append(f"  • {monte_carlo_result['sl_count']} simulations hit Stop Loss")
-        report.append(f"  • {monte_carlo_result['no_hit_count']} simulations hit neither")
+        report.append(f"  - {monte_carlo_result['tp_count']} simulations hit Take Profit")
+        report.append(f"  - {monte_carlo_result['sl_count']} simulations hit Stop Loss")
+        report.append(f"  - {monte_carlo_result['no_hit_count']} simulations hit neither")
 
         if monte_carlo_result['avg_days_to_tp']:
-            report.append(f"  • Avg days to TP: {monte_carlo_result['avg_days_to_tp']:.1f}")
+            report.append(f"  - Avg days to TP: {monte_carlo_result['avg_days_to_tp']:.1f}")
         if monte_carlo_result['avg_days_to_sl']:
-            report.append(f"  • Avg days to SL: {monte_carlo_result['avg_days_to_sl']:.1f}")
+            report.append(f"  - Avg days to SL: {monte_carlo_result['avg_days_to_sl']:.1f}")
     else:
         report.append("[ERROR] Simulation failed")
 
@@ -709,10 +709,10 @@ def format_analysis_report(prediction_result, monte_carlo_result, pattern_result
 
     if pattern_result:
         report.append(f"Win Probability: {pattern_result['win_rate']:.1f}%")
-        report.append(f"  • Found {pattern_result['matches_found']} similar historical setups")
-        report.append(f"  • {pattern_result['tp_count']} times TP was hit first")
-        report.append(f"  • {pattern_result['sl_count']} times SL was hit first")
-        report.append(f"  • {pattern_result['no_hit_count']} times neither was hit")
+        report.append(f"  - Found {pattern_result['matches_found']} similar historical setups")
+        report.append(f"  - {pattern_result['tp_count']} times TP was hit first")
+        report.append(f"  - {pattern_result['sl_count']} times SL was hit first")
+        report.append(f"  - {pattern_result['no_hit_count']} times neither was hit")
     else:
         report.append("[ERROR] No similar patterns found (insufficient historical data)")
 
@@ -727,7 +727,7 @@ def format_analysis_report(prediction_result, monte_carlo_result, pattern_result
 
         report.append(f"\n   Contributing Methods:")
         for method, prob in ensemble_result['individual_probabilities'].items():
-            report.append(f"   • {method}: {prob:.1f}%")
+            report.append(f"   - {method}: {prob:.1f}%")
 
         if ensemble_result['recommendation'] == 'TAKE TRADE':
             report.append(f"\n[RECOMMENDED] {signal}")

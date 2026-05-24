@@ -229,3 +229,5 @@ __marimo__/
 *.html
 *.bak
 train_arima.py
+*.txt
+*.npz
