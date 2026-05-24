@@ -58,25 +58,89 @@ def _atr(df, period):
 
 
 def compute_indicators(df):
+    """
+    Compute all 38 indicators used by the heavy models plus the RL agent's own
+    market-state columns. Must match INDICATOR_COLS in train_xgboost_heavy.py.
+    """
     out = df.copy()
     c   = out['Close']
+    vol = out['Volume']
 
-    out['RSI_14']     = _rsi(c, 14)
-    out['ATR_14']     = _atr(out, 14)
+    # Moving averages
+    out['SMA_20'] = c.rolling(20).mean()
+    out['SMA_50'] = c.rolling(50).mean()
+    out['EMA_9']  = c.ewm(span=9,  min_periods=9).mean()
+    out['EMA_21'] = c.ewm(span=21, min_periods=21).mean()
 
-    bb_mid            = c.rolling(20).mean()
-    bb_std            = c.rolling(20).std()
-    out['BB_width']   = (bb_mid + 2*bb_std - (bb_mid - 2*bb_std)) / (bb_mid + 1e-10)
+    # MA ratios (dimensionless)
+    out['Close_SMA20_ratio'] = (c - out['SMA_20']) / (out['SMA_20'] + 1e-10)
+    out['Close_SMA50_ratio'] = (c - out['SMA_50']) / (out['SMA_50'] + 1e-10)
 
-    ema12             = c.ewm(span=12, min_periods=12).mean()
-    ema26             = c.ewm(span=26, min_periods=26).mean()
-    out['MACD_hist']  = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, min_periods=9).mean()
+    # RSI
+    out['RSI_7']  = _rsi(c, 7)
+    out['RSI_14'] = _rsi(c, 14)
 
+    # MACD
+    ema12 = c.ewm(span=12, min_periods=12).mean()
+    ema26 = c.ewm(span=26, min_periods=26).mean()
+    out['MACD_line']   = ema12 - ema26
+    out['MACD_signal'] = out['MACD_line'].ewm(span=9, min_periods=9).mean()
+    out['MACD_hist']   = out['MACD_line'] - out['MACD_signal']
+
+    # Bollinger Bands
+    bb_mid          = c.rolling(20).mean()
+    bb_std          = c.rolling(20).std()
+    bb_up           = bb_mid + 2 * bb_std
+    bb_lo           = bb_mid - 2 * bb_std
+    out['BB_pct']   = (c - bb_lo) / (bb_up - bb_lo + 1e-10)
+    out['BB_width'] = (bb_up - bb_lo) / (bb_mid + 1e-10)
+
+    # ATR
+    out['ATR_14'] = _atr(out, 14)
+
+    # Stochastic
+    low14           = out['Low'].rolling(14).min()
+    high14          = out['High'].rolling(14).max()
+    k               = 100 * (c - low14) / (high14 - low14 + 1e-10)
+    out['STOCH_K']  = k
+    out['STOCH_D']  = k.rolling(3).mean()
+
+    # OBV (log-scaled)
+    direction    = np.sign(c.diff()).fillna(0)
+    obv_raw      = (direction * vol).cumsum()
+    out['OBV']   = np.log1p(obv_raw.abs()) * np.sign(obv_raw)
+
+    # CCI
+    tp           = (out['High'] + out['Low'] + c) / 3
+    tp_ma        = tp.rolling(14).mean()
+    tp_mad       = tp.rolling(14).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    out['CCI_14'] = (tp - tp_ma) / (0.015 * tp_mad + 1e-10)
+
+    # Volume features
+    out['Volume_log']        = np.log1p(vol)
+    out['Volume_MA20_ratio'] = vol / (vol.rolling(20).mean() + 1e-10)
+
+    # Price changes
+    out['Price_change_1d'] = c.pct_change(1) * 100
+    out['Price_change_5d'] = c.pct_change(5) * 100
+
+    # Volatility
     ret               = c.pct_change()
-    out['Volatility'] = ret.rolling(20).std() * 100
+    out['Volatility_5d']  = ret.rolling(5).std()  * 100
+    out['Volatility_20d'] = ret.rolling(20).std() * 100
+    out['Volatility']     = out['Volatility_20d']  # alias used by RL state
 
-    sma20             = c.rolling(20).mean()
-    out['Trend']      = (c - sma20) / (sma20 + 1e-10)   # positive = above MA
+    # Range
+    out['HL_range_pct'] = (out['High'] - out['Low']) / (c + 1e-10) * 100
+
+    # Derived features used by heavy models (RSI momentum, MACD acceleration, BB squeeze)
+    out['RSI14_slope_3d'] = out['RSI_14'].diff(3)
+    out['MACD_accel']     = out['MACD_hist'].diff(1)
+    bb_width_ma           = out['BB_width'].rolling(20).mean()
+    out['BB_squeeze']     = out['BB_width'] / (bb_width_ma + 1e-10)
+
+    # RL agent market-state columns
+    out['Trend'] = out['Close_SMA20_ratio']   # (Close - SMA20) / SMA20
 
     return out.dropna().reset_index(drop=True)
 
@@ -858,7 +922,7 @@ def run_agent(csv_file):
     # Backtest on validation set
     print("\n[STEP 4/4] Backtesting on validation set...")
     val_env    = TradingEnv(val_sig, val_la)
-    trades_df  = backtest(val_env)
+    trades_df  = backtest(val_env, policy)
     metrics    = compute_metrics(trades_df, val_months)
 
     if not metrics:
