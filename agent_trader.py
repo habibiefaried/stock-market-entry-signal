@@ -99,6 +99,8 @@ def load_model_predictions(csv_file):
 
     df_raw = compute_indicators(df_raw).reset_index(drop=True)
 
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
     model_files = {
         'xgboost':        ('xgboost_model.pkl',        'xgboost_scaler.pkl',        'xgboost_features.txt'),
         'xgboost_heavy':  ('xgboost_heavy_model.pkl',  'xgboost_heavy_scaler.pkl',  'xgboost_heavy_features.txt'),
@@ -129,8 +131,6 @@ def load_model_predictions(csv_file):
                 print(f"  Could not read {nn_name} signal file: {e}")
         else:
             print(f"  {sig_file} not found - {nn_name} signal will be neutral")
-
-    base_dir = os.path.dirname(os.path.abspath(__file__))
 
     loaded_models = {}
     for name, (mf, sf, ff) in model_files.items():
