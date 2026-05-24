@@ -33,9 +33,9 @@ ACTION_LONG  = 0
 ACTION_SHORT = 1
 ACTION_HOLD  = 2
 
-REWARD_TP    =  1.67   # reward when take profit is hit
+REWARD_TP    =  1.5    # reward when take profit is hit (TP is 1.5x SL distance)
 REWARD_SL    = -1.0    # reward when stop loss is hit
-REWARD_HOLD  = -0.05   # per-day holding cost
+REWARD_HOLD  = -0.02   # per-day holding cost (reduced to allow more patience)
 MAX_DAYS     =  5      # max days before forced exit
 MIN_RECORDS  =  300    # minimum rows needed to run agent
 
@@ -407,7 +407,8 @@ class PPOPolicy:
         self.W2     = np.random.randn(hidden, hidden).astype(np.float32) * scale
         self.b2     = np.zeros(hidden, dtype=np.float32)
         self.W3     = np.random.randn(hidden, action_dim).astype(np.float32) * scale
-        self.b3     = np.zeros(action_dim, dtype=np.float32)
+        # Initialize b3 with small negative bias to encourage exploration over HOLD
+        self.b3     = np.array([0.1, 0.1, -0.2], dtype=np.float32)
 
         # Value head
         self.Wv1    = np.random.randn(state_dim, hidden).astype(np.float32) * scale
@@ -443,7 +444,7 @@ class PPOPolicy:
         return action, probs[action], value
 
     def update(self, states, actions, old_log_probs, returns, advantages,
-               clip_eps=0.2, entropy_coef=0.01, n_epochs=4):
+               clip_eps=0.2, entropy_coef=0.02, n_epochs=4):
         """PPO clipped surrogate update (analytical gradient, no autograd)."""
         for _ in range(n_epochs):
             for s, a, old_lp, ret, adv in zip(states, actions, old_log_probs,
@@ -460,16 +461,17 @@ class PPOPolicy:
                 # Value loss
                 value_loss = 0.5 * (ret - value) ** 2
 
-                # Entropy bonus
+                # Entropy bonus (increased to encourage exploration)
                 entropy = -np.sum(probs * np.log(probs + 1e-10))
 
                 loss = policy_loss + value_loss - entropy_coef * entropy
 
-                # Approximate gradient via finite differences on W3 only for speed
-                # (full backprop would require storing intermediate activations)
+                # Improved gradient: use advantage sign and magnitude
                 grad_logits = probs.copy()
                 grad_logits[a] -= 1.0
-                grad_logits    *= self.lr * np.sign(policy_loss + 1e-10) * 0.1
+                # Scale by advantage to provide stronger signal
+                grad_scale = self.lr * np.clip(adv, -2.0, 2.0) * 0.15
+                grad_logits *= grad_scale
 
                 self.W3 -= np.outer(h2, grad_logits)
                 self.b3 -= grad_logits
@@ -759,8 +761,15 @@ def compute_metrics(trades_df, n_months):
         equity.append(equity[-1] + r)
     equity       = np.array(equity)
 
+    # Compute drawdown properly: use absolute peak value or set min threshold
     peak         = np.maximum.accumulate(equity)
-    drawdowns    = (equity - peak) / (np.abs(peak) + 1e-10) * 100
+    # When peak is negative or zero, we need special handling
+    # Standard formula: DD = (equity - peak) / abs(peak) when peak != 0
+    # When peak is 0, drawdown is just the equity difference
+    peak_safe    = np.where(np.abs(peak) > 1e-3, np.abs(peak), 1.0)
+    drawdowns    = (equity - peak) / peak_safe * 100
+    # Cap drawdown at -100% (can't lose more than 100% in equity terms)
+    drawdowns    = np.maximum(drawdowns, -100.0)
     max_dd       = float(drawdowns.min())
 
     returns      = np.diff(equity)
@@ -785,11 +794,39 @@ def compute_metrics(trades_df, n_months):
 # FINAL ACTION FOR REPORT
 # ---------------------------------------------------------------------------
 
-def get_current_action(signals_df, df_raw, policy):
+def get_current_action(signals_df, df_raw, policy, use_voting=False):
     """Run greedy policy on the last available row."""
     last_row   = signals_df.iloc[-1]
     state      = build_state(last_row)
-    action, prob, _ = policy.act_greedy(state)
+
+    if use_voting:
+        # Fallback to simple voting when PPO performance is poor
+        votes = []
+        for name in MODEL_NAMES:
+            sig  = int(last_row.get(f'{name}_signal', 0))
+            prob = float(last_row.get(f'{name}_prob', 0.5))
+            # Weight vote by probability if significantly confident
+            if prob > 0.7:
+                votes.extend([sig] * 2)  # double weight for high-confidence signals
+            else:
+                votes.append(sig)
+
+        # Count votes: 1=LONG, -1=SHORT, 0=HOLD
+        vote_long  = votes.count(1)
+        vote_short = votes.count(-1)
+        vote_hold  = votes.count(0)
+
+        if vote_long > vote_short and vote_long > vote_hold:
+            action = ACTION_LONG
+            prob   = vote_long / len(votes)
+        elif vote_short > vote_long and vote_short > vote_hold:
+            action = ACTION_SHORT
+            prob   = vote_short / len(votes)
+        else:
+            action = ACTION_HOLD
+            prob   = vote_hold / len(votes) if vote_hold > 0 else 0.5
+    else:
+        action, prob, _ = policy.act_greedy(state)
 
     # ATR-based SL/TP (consistent with training environment and model scripts)
     close   = float(last_row['close'])
@@ -932,8 +969,11 @@ def run_agent(csv_file):
                    'total_trades': 0, 'total_reward': 0,
                    'n_long': 0, 'n_short': 0}
 
-    # Current action
-    current = get_current_action(signals_df, df_raw, policy)
+    # Current action - use voting fallback if PPO performance is poor
+    use_voting = (metrics['win_rate'] < 40 or metrics['profit_factor'] < 1.0)
+    current = get_current_action(signals_df, df_raw, policy, use_voting=use_voting)
+    if use_voting:
+        print("  Using voting-based fallback (PPO performance below threshold)")
 
     # Print results
     print("\n" + "="*70)
