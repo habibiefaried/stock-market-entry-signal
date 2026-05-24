@@ -763,6 +763,8 @@ def run_agent(csv_file):
     print("RL AGENT TRADER - PPO META-AGENT")
     print("="*70)
 
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
     if not os.path.exists(csv_file):
         print(f"Error: File {csv_file} not found")
         sys.exit(1)
