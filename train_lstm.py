@@ -2,10 +2,10 @@
 CNN-1D + LSTM Stock Price Prediction Model
 
 Architecture:
-  1. Technical Indicator Engine  — 50+ signals (RSI, MACD, MA, BB, ATR, Stoch, OBV, CCI, etc.)
-  2. CNN-1D Feature Extractor    — learns local patterns across indicator channels
-  3. LSTM Sequence Learner       — learns temporal dependencies in extracted features
-  4. Dense Head                  — outputs tomorrow's closing price
+  1. Technical Indicator Engine  - 50+ signals (RSI, MACD, MA, BB, ATR, Stoch, OBV, CCI, etc.)
+  2. CNN-1D Feature Extractor    - learns local patterns across indicator channels
+  3. LSTM Sequence Learner       - learns temporal dependencies in extracted features
+  4. Dense Head                  - outputs tomorrow's closing price
 
 Why CNN before LSTM?
   - CNN: detects short-range cross-indicator patterns (e.g. RSI divergence + BB squeeze)
@@ -116,7 +116,7 @@ def compute_technical_indicators(df):
       - MA Ratios         : Close / SMAx normalised
       - RSI               : periods 7, 14, 21
       - MACD              : fast 12 / slow 26 / signal 9
-      - Bollinger Bands   : 20-period, ±2 std  (+%B and bandwidth)
+      - Bollinger Bands   : 20-period, +/-2 std  (+%B and bandwidth)
       - ATR               : periods 7, 14
       - Stochastic        : %K(14,3), %D
       - OBV               : on-balance volume
@@ -301,7 +301,7 @@ class TemporalAttention(Layer):
 
     Given LSTM output  H  of shape (batch, timesteps, units), the layer
     learns a scalar importance weight for each timestep, then returns the
-    weighted sum — a single context vector of shape (batch, units).
+    weighted sum - a single context vector of shape (batch, units).
 
     Why this helps:
       Not every day in the 60-day lookback window matters equally.
@@ -310,9 +310,9 @@ class TemporalAttention(Layer):
       carry the most signal, ignoring the rest.
 
     Maths:
-      e_t = tanh(W · h_t + b)   [score for each timestep]
+      e_t = tanh(W . h_t + b)   [score for each timestep]
       a_t = softmax(e_t)         [normalised attention weights]
-      c   = Σ a_t · h_t          [context vector]
+      c   = sum a_t . h_t          [context vector]
     """
 
     def __init__(self, **kwargs):
@@ -353,7 +353,7 @@ def build_cnn_lstm_model(
     # CNN block 1
     cnn1_filters=64,
     cnn1_kernel=3,
-    # CNN block 2  (wider by default — more cross-indicator pattern capacity)
+    # CNN block 2  (wider by default - more cross-indicator pattern capacity)
     cnn2_filters=256,
     cnn2_kernel=5,
     # CNN block 3
@@ -381,10 +381,10 @@ def build_cnn_lstm_model(
 
     LSTM stack:
       LSTM(lstm1_units, return_sequences=True)  + Dropout
-      LSTM(lstm2_units, return_sequences=True)  + Dropout   ← feeds attention
+      LSTM(lstm2_units, return_sequences=True)  + Dropout   <- feeds attention
 
     Attention:
-      TemporalAttention — learns a soft weight per timestep, collapses the
+      TemporalAttention - learns a soft weight per timestep, collapses the
       sequence to a single context vector.  The model decides which days in the
       lookback window matter most for tomorrow's prediction.
 

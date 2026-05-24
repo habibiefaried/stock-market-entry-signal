@@ -2,14 +2,14 @@
 CNN-1D + TFT (Temporal Fusion Transformer) Stock Price Prediction Model
 
 Architecture:
-  1. Technical Indicator Engine  — same 50+ signals as CNN-LSTM
-  2. CNN-1D Feature Extractor    — learns local cross-indicator patterns
-  3. Gated Residual Network      — non-linear feature selection per timestep
-  4. Variable Selection Network  — learns which indicators matter most
-  5. LSTM Encoder                — builds local context sequence
-  6. Multi-Head Self-Attention   — captures long-range temporal dependencies
-  7. Gated skip connections      — let irrelevant paths be suppressed
-  8. Dense Head                  — outputs tomorrow's closing price
+  1. Technical Indicator Engine  - same 50+ signals as CNN-LSTM
+  2. CNN-1D Feature Extractor    - learns local cross-indicator patterns
+  3. Gated Residual Network      - non-linear feature selection per timestep
+  4. Variable Selection Network  - learns which indicators matter most
+  5. LSTM Encoder                - builds local context sequence
+  6. Multi-Head Self-Attention   - captures long-range temporal dependencies
+  7. Gated skip connections      - let irrelevant paths be suppressed
+  8. Dense Head                  - outputs tomorrow's closing price
 
 Why TFT after CNN?
   - CNN: detects short-range cross-indicator patterns (BB squeeze + RSI divergence)
@@ -213,10 +213,10 @@ FEATURE_COLS = [
 class GatedLinearUnit(Layer):
     """
     GLU: splits input in half, one half gates the other via sigmoid.
-    Controls how much information flows through — the network learns
+    Controls how much information flows through - the network learns
     to suppress irrelevant signals completely.
 
-      GLU(x) = x[:, :d] ⊙ sigmoid(x[:, d:])
+      GLU(x) = x[:, :d] * sigmoid(x[:, d:])
     """
     def __init__(self, units, **kwargs):
         super().__init__(**kwargs)
@@ -245,7 +245,7 @@ class GatedResidualNetwork(Layer):
     If the input dimension differs from output units, a linear projection
     aligns them for the skip connection.
 
-    GRN(x) = LayerNorm(x_proj + GLU(ELU(W2 · ELU(W1 · x))))
+    GRN(x) = LayerNorm(x_proj + GLU(ELU(W2 . ELU(W1 . x))))
     """
     def __init__(self, units, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
@@ -286,7 +286,7 @@ class VariableSelectionNetwork(Layer):
     The final output is the weighted sum of the per-feature GRN outputs.
 
     This makes the model explicitly learn which indicators (RSI, MACD,
-    BB width, …) carry useful information at each timestep — and suppress
+    BB width, ...) carry useful information at each timestep - and suppress
     the rest.
     """
     def __init__(self, units, n_features, dropout_rate=0.1, **kwargs):
@@ -374,12 +374,12 @@ def build_cnn_tft_model(
         -> Dense(1)                  (tomorrow's price)
 
     VSN is omitted from the per-timestep path here because the CNN already
-    performs implicit feature selection; VSN would add O(n_features²)
+    performs implicit feature selection; VSN would add O(n_features2)
     parameters on 54 features and overfit on ~1000 rows.
     """
     inp = Input(shape=input_shape)                      # (lookback, n_features)
 
-    # ── CNN feature extraction ──────────────────────────────────────────────
+    # -- CNN feature extraction ----------------------------------------------
     x = Conv1D(cnn1_filters, cnn1_kernel, activation='relu', padding='same')(inp)
     x = BatchNormalization()(x)
 
@@ -391,23 +391,23 @@ def build_cnn_tft_model(
     x = BatchNormalization()(x)
     x = Dropout(cnn_dropout)(x)
 
-    # ── Project CNN output to d_model ───────────────────────────────────────
+    # -- Project CNN output to d_model ---------------------------------------
     x = Dense(d_model)(x)                              # (batch, T', d_model)
 
-    # ── GRN: non-linear per-timestep transform ──────────────────────────────
+    # -- GRN: non-linear per-timestep transform ------------------------------
     grn_in  = GatedResidualNetwork(d_model, grn_dropout, name='grn_pre_lstm')(x)
 
-    # ── LSTM encoder: local temporal context ────────────────────────────────
+    # -- LSTM encoder: local temporal context --------------------------------
     lstm_out = LSTM(lstm_units, return_sequences=True, name='lstm_encoder')(grn_in)
 
-    # ── GRN + gated skip after LSTM ─────────────────────────────────────────
+    # -- GRN + gated skip after LSTM -----------------------------------------
     grn_post  = GatedResidualNetwork(d_model, grn_dropout, name='grn_post_lstm')(lstm_out)
     # gate: how much of the LSTM output vs the skip to keep
     gate_lstm = Dense(d_model, activation='sigmoid', name='gate_lstm')(grn_post)
     x         = gate_lstm * grn_post + (1 - gate_lstm) * grn_in
     x         = LayerNormalization(name='ln_after_lstm')(x)
 
-    # ── Multi-Head Self-Attention: long-range temporal dependencies ──────────
+    # -- Multi-Head Self-Attention: long-range temporal dependencies ----------
     attn_out, attn_weights = MultiHeadAttention(
         num_heads=n_heads,
         key_dim=d_model // n_heads,
@@ -415,16 +415,16 @@ def build_cnn_tft_model(
         name='multi_head_attention'
     )(x, x, return_attention_scores=True)
 
-    # ── GRN + gated skip after attention ────────────────────────────────────
+    # -- GRN + gated skip after attention ------------------------------------
     grn_attn  = GatedResidualNetwork(d_model, grn_dropout, name='grn_post_attn')(attn_out)
     gate_attn = Dense(d_model, activation='sigmoid', name='gate_attn')(grn_attn)
     x         = gate_attn * grn_attn + (1 - gate_attn) * x
     x         = LayerNormalization(name='ln_after_attn')(x)
 
-    # ── Collapse timestep axis ───────────────────────────────────────────────
+    # -- Collapse timestep axis -----------------------------------------------
     x = GlobalAveragePooling1D(name='temporal_pool')(x)
 
-    # ── Dense head ───────────────────────────────────────────────────────────
+    # -- Dense head -----------------------------------------------------------
     x   = Dense(dense_units, activation='relu', name='head_dense')(x)
     x   = Dropout(dense_dropout)(x)
     out = Dense(1, name='price_output')(x)
@@ -516,7 +516,7 @@ def train_tft_model(
     dense_units=32,
     dense_dropout=0.1,
 ):
-    # ── Load & prepare ───────────────────────────────────────────────────────
+    # -- Load & prepare -------------------------------------------------------
     df, feature_cols = load_and_prepare_data(csv_file)
     train_df, test_df = split_train_test(df)
 
@@ -525,7 +525,7 @@ def train_tft_model(
     X_test_raw  = test_df[feature_cols].values
     y_test_raw  = test_df['Close'].values
 
-    # ── Scale ────────────────────────────────────────────────────────────────
+    # -- Scale ----------------------------------------------------------------
     scaler_X = MinMaxScaler()
     scaler_y = MinMaxScaler()
 
@@ -534,7 +534,7 @@ def train_tft_model(
     X_test_scaled  = scaler_X.transform(X_test_raw)
     y_test_scaled  = scaler_y.transform(y_test_raw.reshape(-1, 1))
 
-    # ── Sequences ────────────────────────────────────────────────────────────
+    # -- Sequences ------------------------------------------------------------
     X_train, y_train = create_sequences(X_train_scaled, y_train_scaled, lookback)
     X_test,  y_test  = create_sequences(X_test_scaled,  y_test_scaled,  lookback)
 
@@ -546,7 +546,7 @@ def train_tft_model(
         print("ERROR: Not enough data. Reduce --lookback or fetch more data.")
         return
 
-    # ── Build model ──────────────────────────────────────────────────────────
+    # -- Build model ----------------------------------------------------------
     print(f"\nBuilding CNN-1D + TFT model  (input: {X_train.shape[1:]})")
     model = build_cnn_tft_model(
         input_shape=(X_train.shape[1], X_train.shape[2]),
@@ -561,7 +561,7 @@ def train_tft_model(
     )
     print(model.summary())
 
-    # ── Callbacks ────────────────────────────────────────────────────────────
+    # -- Callbacks ------------------------------------------------------------
     early_stop = EarlyStopping(
         monitor='val_loss', patience=15,
         restore_best_weights=True, verbose=0
@@ -575,7 +575,7 @@ def train_tft_model(
         patience=7, min_lr=1e-6, verbose=0
     )
 
-    # ── Train ─────────────────────────────────────────────────────────────────
+    # -- Train -----------------------------------------------------------------
     print(f"\nTraining CNN-TFT on {_device}...")
     print("This may take 3-8 minutes with GPU, 15-30 minutes with CPU")
 
@@ -597,7 +597,7 @@ def train_tft_model(
         }
     )
 
-    # ── Predict ──────────────────────────────────────────────────────────────
+    # -- Predict --------------------------------------------------------------
     print("\nMaking predictions...")
     y_train_pred_scaled = model.predict(X_train, verbose=0)
     y_test_pred_scaled  = model.predict(X_test,  verbose=0)
@@ -607,7 +607,7 @@ def train_tft_model(
     y_train_act  = scaler_y.inverse_transform(y_train).flatten()
     y_test_act   = scaler_y.inverse_transform(y_test).flatten()
 
-    # ── Metrics ──────────────────────────────────────────────────────────────
+    # -- Metrics --------------------------------------------------------------
     train_mae  = mean_absolute_error(y_train_act, y_train_pred)
     train_rmse = np.sqrt(mean_squared_error(y_train_act, y_train_pred))
     test_mae   = mean_absolute_error(y_test_act,  y_test_pred)
@@ -635,7 +635,7 @@ def train_tft_model(
     print(f"  Test F1-Score:      {test_f1*100:.2f}%")
     print("\n" + "="*60)
 
-    # ── Plots ─────────────────────────────────────────────────────────────────
+    # -- Plots -----------------------------------------------------------------
     plt.figure(figsize=(12, 4))
     plt.subplot(1, 2, 1)
     plt.plot(history.history['loss'],     label='Train Loss')
@@ -665,7 +665,7 @@ def train_tft_model(
     plt.savefig('tft_predictions.png')
     print("Predictions plot saved as: tft_predictions.png")
 
-    # ── Trading signal ────────────────────────────────────────────────────────
+    # -- Trading signal --------------------------------------------------------
     print("\n" + "="*60)
     print("TRADING SIGNAL FOR NEXT DAY")
     print("="*60)
@@ -724,7 +724,7 @@ def train_tft_model(
     print(f"\nModel Confidence: {confidence:.1f}% (based on test accuracy)")
     print(f"Recent Volatility: ${volatility:.2f} per day")
 
-    # ── Multi-approach probability analysis ───────────────────────────────────
+    # -- Multi-approach probability analysis -----------------------------------
     print("\n" + "="*70)
     print("Running Multi-Approach Win Probability Analysis...")
     print("="*70)
@@ -792,7 +792,7 @@ def train_tft_model(
     print("Always do your own research and manage risk appropriately.")
     print("="*60)
 
-    # ── Save ─────────────────────────────────────────────────────────────────
+    # -- Save -----------------------------------------------------------------
     ticker = os.path.basename(csv_file).split('_')[0]
     model_info = {
         'ticker':         ticker,

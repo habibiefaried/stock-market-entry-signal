@@ -325,12 +325,12 @@ def generate_probability_html(signal):
 
     # Determine recommendation badge class
     rec_class = 'rec-take' if 'TAKE' in recommendation else 'rec-skip'
-    rec_text = '✓ TAKE TRADE' if 'TAKE' in recommendation else '✗ SKIP TRADE'
+    rec_text = '[OK] TAKE TRADE' if 'TAKE' in recommendation else '[X] SKIP TRADE'
 
     html = []
     html.append('<div class="probability-section">')
     html.append('    <div class="probability-header">')
-    html.append('        <h3 class="probability-title">🎯 Multi-Approach Win Probability Analysis</h3>')
+    html.append('        <h3 class="probability-title"> Multi-Approach Win Probability Analysis</h3>')
     html.append('    </div>')
     html.append('    <div class="ensemble-result">')
     html.append(f'        <div class="probability-circle {prob_class}">')
@@ -346,7 +346,7 @@ def generate_probability_html(signal):
 
     # Approach 1: Multi-Day Prediction
     html.append('        <div class="approach-card">')
-    html.append('            <div class="approach-header">📈 Approach 1: Multi-Day Prediction</div>')
+    html.append('            <div class="approach-header"> Approach 1: Multi-Day Prediction</div>')
 
     if 'approach1_probability' in signal and signal['approach1_probability'] is not None:
         html.append(f'            <div class="approach-probability">{signal["approach1_probability"]:.1f}%</div>')
@@ -379,7 +379,7 @@ def generate_probability_html(signal):
 
     # Approach 2: Monte Carlo
     html.append('        <div class="approach-card">')
-    html.append('            <div class="approach-header">🎲 Approach 2: Monte Carlo (1000 runs)</div>')
+    html.append('            <div class="approach-header"> Approach 2: Monte Carlo (1000 runs)</div>')
 
     if 'approach2_probability' in signal:
         html.append(f'            <div class="approach-probability">{signal["approach2_probability"]:.1f}%</div>')
@@ -396,7 +396,7 @@ def generate_probability_html(signal):
 
     # Approach 3: Historical Patterns
     html.append('        <div class="approach-card">')
-    html.append('            <div class="approach-header">📊 Approach 3: Historical Patterns</div>')
+    html.append('            <div class="approach-header"> Approach 3: Historical Patterns</div>')
 
     if 'approach3_probability' in signal:
         html.append(f'            <div class="approach-probability">{signal["approach3_probability"]:.1f}%</div>')
@@ -416,7 +416,165 @@ def generate_probability_html(signal):
 
     return '\n'.join(html)
 
-def generate_html_report(results, csv_file, output_file):
+def run_agent(csv_file):
+    """Run the PPO RL meta-agent and return parsed result dict."""
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'agent_trader.py')
+    if not os.path.exists(script_path):
+        print("[RL-Agent] Script not found, skipping")
+        return None
+    print("[RL-Agent] Starting PPO meta-agent...")
+    try:
+        result = subprocess.run(
+            [sys.executable, script_path, csv_file],
+            capture_output=True, text=True, timeout=600,
+            cwd=os.path.dirname(os.path.abspath(__file__))
+        )
+        if result.returncode != 0:
+            print(f"[RL-Agent] Failed: {result.stderr[:300]}")
+            return None
+        output = result.stdout
+        print("[RL-Agent] Completed successfully")
+        return parse_agent_output(output)
+    except Exception as e:
+        print(f"[RL-Agent] Error: {e}")
+        return None
+
+
+def parse_agent_output(output):
+    """Parse RL agent stdout into a dict."""
+    if not output or 'RL AGENT TRADING RESULTS' not in output:
+        return None
+    d = {}
+    patterns = [
+        ('action',          r'AGENT_ACTION:\s+(\w+)'),
+        ('confidence',      r'AGENT_CONFIDENCE:\s+([\d.]+)'),
+        ('win_rate',        r'AGENT_WINRATE:\s+([\d.]+)'),
+        ('entry',           r'Entry Price:\s+\$?([\d,]+\.?\d*)'),
+        ('sl',              r'Stop Loss:\s+\$?([\d,]+\.?\d*)\s+\(([+-]?[\d.]+)%\)'),
+        ('tp',              r'Take Profit:\s+\$?([\d,]+\.?\d*)\s+\(([+-]?[\d.]+)%\)'),
+        ('total_trades',    r'Total Trades:\s+(\d+)'),
+        ('profit_factor',   r'Profit Factor:\s+([\d.]+)'),
+        ('sharpe',          r'Sharpe Ratio:\s+([\d.]+)'),
+        ('max_drawdown',    r'Max Drawdown:\s+([+-]?[\d.]+)'),
+        ('avg_trades_month',r'Avg Trades/Month:\s+([\d.]+)'),
+        ('long_count',      r'Long / Short:\s+(\d+)'),
+        ('short_count',     r'Long / Short:\s+\d+ / (\d+)'),
+    ]
+    for key, pat in patterns:
+        m = re.search(pat, output)
+        if m:
+            try:
+                d[key] = float(m.group(1).replace(',', ''))
+            except Exception:
+                d[key] = m.group(1).strip()
+
+    # Parse SL/TP percentages separately
+    sl_m = re.search(r'Stop Loss:\s+\$[\d,]+\.?\d*\s+\(([+-]?[\d.]+)%\)', output)
+    tp_m = re.search(r'Take Profit:\s+\$[\d,]+\.?\d*\s+\(([+-]?[\d.]+)%\)', output)
+    if sl_m:
+        d['sl_pct'] = float(sl_m.group(1))
+    if tp_m:
+        d['tp_pct'] = float(tp_m.group(1))
+
+    return d if d.get('action') else None
+
+
+def generate_agent_html(agent):
+    """Generate the top-of-report HTML block for the RL agent decision."""
+    if not agent:
+        return ""
+
+    action     = str(agent.get('action', 'HOLD')).upper()
+    confidence = float(agent.get('confidence', 0))
+    win_rate   = float(agent.get('win_rate', 0))
+    pf         = float(agent.get('profit_factor', 0))
+    sharpe     = float(agent.get('sharpe', 0))
+    max_dd     = float(agent.get('max_drawdown', 0))
+    atm        = float(agent.get('avg_trades_month', 0))
+    entry      = float(agent.get('entry', 0))
+    sl         = float(agent.get('sl', 0))
+    tp         = float(agent.get('tp', 0))
+    sl_pct     = float(agent.get('sl_pct', 0))
+    tp_pct     = float(agent.get('tp_pct', 0))
+    n_trades   = int(agent.get('total_trades', 0))
+
+    if action == 'LONG':
+        action_color  = '#27ae60'
+        action_bg     = 'linear-gradient(135deg,#11998e 0%,#38ef7d 100%)'
+        action_label  = 'LONG (BUY)'
+    elif action == 'SHORT':
+        action_color  = '#e74c3c'
+        action_bg     = 'linear-gradient(135deg,#ee0979 0%,#ff6a00 100%)'
+        action_label  = 'SHORT (SELL)'
+    else:
+        action_color  = '#f39c12'
+        action_bg     = 'linear-gradient(135deg,#f093fb 0%,#f5576c 100%)'
+        action_label  = 'HOLD (WAIT)'
+
+    conf_color = '#27ae60' if confidence >= 60 else ('#f39c12' if confidence >= 45 else '#e74c3c')
+    wr_color   = '#27ae60' if win_rate   >= 60 else ('#f39c12' if win_rate   >= 50 else '#e74c3c')
+    pf_color   = '#27ae60' if pf         >= 1.5 else ('#f39c12' if pf        >= 1.0 else '#e74c3c')
+    sr_color   = '#27ae60' if sharpe     >= 1.0 else ('#f39c12' if sharpe    >= 0.5 else '#e74c3c')
+    dd_color   = '#27ae60' if max_dd     > -10  else ('#f39c12' if max_dd    > -20  else '#e74c3c')
+
+    h = []
+    h.append('<div style="background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);'
+             'border-radius:16px;padding:40px;margin-bottom:40px;color:white;">')
+    h.append('  <div style="text-align:center;margin-bottom:30px;">')
+    h.append('    <div style="font-size:0.9em;letter-spacing:3px;text-transform:uppercase;'
+             'opacity:0.7;margin-bottom:8px;">PPO Reinforcement Learning Meta-Agent</div>')
+    h.append('    <div style="font-size:2em;font-weight:800;letter-spacing:1px;">RL AGENT DECISION</div>')
+    h.append('  </div>')
+
+    # Action badge
+    h.append(f'  <div style="text-align:center;margin-bottom:30px;">')
+    h.append(f'    <div style="display:inline-block;background:{action_bg};'
+             f'padding:20px 60px;border-radius:40px;font-size:2em;font-weight:800;'
+             f'letter-spacing:2px;box-shadow:0 8px 25px rgba(0,0,0,0.4);">{action_label}</div>')
+    h.append(f'  </div>')
+
+    # Confidence + entry/sl/tp
+    h.append('  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));'
+             'gap:20px;margin-bottom:30px;">')
+    for label, val, color in [
+        ('Agent Confidence', f'{confidence:.1f}%', conf_color),
+        ('Entry Price',      f'${entry:,.2f}',      'white'),
+        ('Stop Loss',        f'${sl:,.2f} ({sl_pct:+.1f}%)', '#e74c3c'),
+        ('Take Profit',      f'${tp:,.2f} ({tp_pct:+.1f}%)', '#27ae60'),
+    ]:
+        h.append(f'    <div style="background:rgba(255,255,255,0.08);border-radius:12px;'
+                 f'padding:20px;text-align:center;">')
+        h.append(f'      <div style="font-size:0.8em;opacity:0.7;text-transform:uppercase;'
+                 f'letter-spacing:1px;margin-bottom:8px;">{label}</div>')
+        h.append(f'      <div style="font-size:1.5em;font-weight:700;color:{color};">{val}</div>')
+        h.append(f'    </div>')
+    h.append('  </div>')
+
+    # Backtest metrics
+    h.append('  <div style="border-top:1px solid rgba(255,255,255,0.15);padding-top:25px;">')
+    h.append('    <div style="font-size:0.85em;opacity:0.7;text-transform:uppercase;'
+             'letter-spacing:2px;margin-bottom:15px;text-align:center;">Backtest Metrics</div>')
+    h.append('    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:15px;">')
+    for label, val, color in [
+        ('Win Rate',        f'{win_rate:.1f}%',   wr_color),
+        ('Profit Factor',   f'{pf:.2f}',          pf_color),
+        ('Sharpe Ratio',    f'{sharpe:.2f}',       sr_color),
+        ('Max Drawdown',    f'{max_dd:.1f}%',      dd_color),
+        ('Trades/Month',    f'{atm:.1f}',          'white'),
+        ('Total Trades',    f'{n_trades}',         'white'),
+    ]:
+        h.append(f'      <div style="background:rgba(255,255,255,0.05);border-radius:10px;'
+                 f'padding:15px;text-align:center;">')
+        h.append(f'        <div style="font-size:0.75em;opacity:0.6;margin-bottom:6px;">{label}</div>')
+        h.append(f'        <div style="font-size:1.3em;font-weight:700;color:{color};">{val}</div>')
+        h.append(f'      </div>')
+    h.append('    </div>')
+    h.append('  </div>')
+    h.append('</div>')
+    return '\n'.join(h)
+
+
+def generate_html_report(results, csv_file, output_file, agent_result=None):
     """
     Generate HTML report comparing all models
 
@@ -894,6 +1052,11 @@ def generate_html_report(results, csv_file, output_file):
             </div>
 """)
 
+    # RL Agent section - top of report
+    agent_html = generate_agent_html(agent_result)
+    if agent_html:
+        html.append(agent_html)
+
     # Executive Summary
     html.append("<h2>Executive Summary</h2>")
     html.append("<div style='white-space: pre-wrap; font-family: monospace; background: #f4f4f4; padding: 15px; border-radius: 4px;'>")
@@ -960,7 +1123,7 @@ def generate_html_report(results, csv_file, output_file):
     # Trading Signals
     if successful_models:
         html.append('<div class="section">')
-        html.append('    <h2 class="section-title">📊 Trading Signals & Analysis</h2>')
+        html.append('    <h2 class="section-title"> Trading Signals & Analysis</h2>')
 
         for result in successful_models:
             signal = parse_trading_signal(result['output'])
@@ -970,20 +1133,20 @@ def generate_html_report(results, csv_file, output_file):
                 signal_text = signal.get('signal', 'UNKNOWN')
                 if 'BUY' in signal_text:
                     signal_class = 'signal-buy'
-                    signal_badge = f'<span class="signal-badge signal-buy">🚀 BUY (LONG)</span>'
+                    signal_badge = f'<span class="signal-badge signal-buy"> BUY (LONG)</span>'
                 elif 'SHORT' in signal_text:
                     signal_class = 'signal-short'
-                    signal_badge = f'<span class="signal-badge signal-short">📉 SHORT (SELL)</span>'
+                    signal_badge = f'<span class="signal-badge signal-short"> SHORT (SELL)</span>'
                 else:
                     signal_class = 'signal-hold'
-                    signal_badge = f'<span class="signal-badge signal-hold">⏸️ HOLD</span>'
+                    signal_badge = f'<span class="signal-badge signal-hold"> HOLD</span>'
 
                 # Recommendation badge for header
                 rec = signal.get('recommendation', '')
                 if 'TAKE' in rec:
-                    rec_badge = '<span class="signal-badge" style="background:linear-gradient(135deg,#27ae60,#2ecc71);color:#fff;">✓ TAKE TRADE</span>'
+                    rec_badge = '<span class="signal-badge" style="background:linear-gradient(135deg,#27ae60,#2ecc71);color:#fff;">[OK] TAKE TRADE</span>'
                 elif 'SKIP' in rec:
-                    rec_badge = '<span class="signal-badge" style="background:linear-gradient(135deg,#c0392b,#e74c3c);color:#fff;">✗ SKIP TRADE</span>'
+                    rec_badge = '<span class="signal-badge" style="background:linear-gradient(135deg,#c0392b,#e74c3c);color:#fff;">[X] SKIP TRADE</span>'
                 else:
                     rec_badge = ''
 
@@ -995,7 +1158,7 @@ def generate_html_report(results, csv_file, output_file):
                     html.append(f'            {rec_badge}')
                 html.append('        </div>')
 
-                # Stats Grid — TP probability is the headline stat
+                # Stats Grid - TP probability is the headline stat
                 html.append('        <div class="stats-grid">')
 
                 if 'ensemble_probability' in signal:
@@ -1008,7 +1171,7 @@ def generate_html_report(results, csv_file, output_file):
                         prob_color = '#e74c3c'
                     conf_label = signal.get('confidence_level', '')
                     html.append('            <div class="stat-box" style="border-left:4px solid ' + prob_color + '; background:rgba(0,0,0,0.02);">')
-                    html.append('                <div class="stat-label">🎯 TP Win Probability</div>')
+                    html.append('                <div class="stat-label"> TP Win Probability</div>')
                     html.append(f'                <div class="stat-value" style="color:{prob_color};font-size:1.8em;font-weight:800;">{prob:.1f}%</div>')
                     if conf_label:
                         html.append(f'                <div style="font-size:0.75em;color:#7f8c8d;margin-top:2px;">{conf_label} CONFIDENCE</div>')
@@ -1228,7 +1391,7 @@ def generate_html_report(results, csv_file, output_file):
     html.append("""
             <!-- Disclaimer -->
             <div class="disclaimer">
-                <h3>⚠️ DISCLAIMER</h3>
+                <h3>[!] DISCLAIMER</h3>
                 <p>This report is generated by statistical models and is <strong>NOT financial advice</strong>.</p>
                 <p>Past performance does not guarantee future results.</p>
                 <p>Stock prices are inherently unpredictable and influenced by many factors not captured by these models.</p>
@@ -1266,17 +1429,21 @@ Examples:
 
 This will:
   1. Fetch stock data (if --ticker provided) or use existing CSV
-  2. Run all 4 models (LSTM, XGBoost, LightGBM, RandomForest) in parallel
-  3. Generate plots for each model
-  4. Create a comprehensive HTML report: RESULT-{TICKER}-{DATE}.html
+  2. Run all 7 models in parallel (LSTM, TFT, XGBoost, XGBoost-Heavy, LightGBM, LightGBM-Heavy, RandomForest)
+  3. Run the PPO RL meta-agent (reads all 7 model outputs)
+  4. Generate plots for each model
+  5. Create a comprehensive HTML report: RESULT-{TICKER}-{DATE}.html
 
-Default: 48 months (4 years) of historical data
+Default: 96 months (8 years) of historical data.
+  8 years is the recommended minimum -- it covers at least one full bull/bear/recovery cycle,
+  which is critical for the RL agent to learn generalised entry rules rather than
+  memorising a single regime.
         '''
     )
 
     parser.add_argument('csv_file', type=str, nargs='?', help='Path to CSV file with stock data (optional if --ticker provided)')
     parser.add_argument('--ticker', type=str, help='Stock ticker to fetch (e.g., MSFT, BTC-USD)')
-    parser.add_argument('--months', type=int, default=48, help='Months of historical data (default: 48 = 4 years)')
+    parser.add_argument('--months', type=int, default=96, help='Months of historical data (default: 96 = 8 years)')
 
     args = parser.parse_args()
 
@@ -1355,9 +1522,15 @@ Default: 48 months (4 years) of historical data
         status = "[OK]" if result['success'] else "[FAIL]"
         print(f"  {status} {result['name']}")
 
+    # Run RL meta-agent (after all 7 models have saved their pkl files)
+    print("\n" + "="*60)
+    print("RUNNING RL META-AGENT")
+    print("="*60)
+    agent_result = run_agent(csv_file)
+
     # Generate HTML report
     print("\nGenerating comparison report...")
-    generate_html_report(results, csv_file, output_file)
+    generate_html_report(results, csv_file, output_file, agent_result=agent_result)
 
     print("\n" + "="*60)
     print("ALL DONE!")

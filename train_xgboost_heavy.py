@@ -1,5 +1,5 @@
 """
-XGBoost Heavy — Rich Feature Set + Deep Ensemble
+XGBoost Heavy - Rich Feature Set + Deep Ensemble
 
 Differences from train_xgboost.py (standard):
   Features  : 5 OHLCV -> 70+ (all 52 technical indicators + lag features)
@@ -81,96 +81,90 @@ def compute_technical_indicators(df):
     out = df.copy()
     c   = out['Close']
 
-    for p in [5, 10, 20, 50, 100, 200]:
-        out[f'SMA_{p}'] = c.rolling(p).mean()
-    for p in [9, 21, 50, 100]:
-        out[f'EMA_{p}'] = c.ewm(span=p, min_periods=p).mean()
+    # Moving averages: 2 SMA + 2 EMA (short and medium-term only)
+    out['SMA_20'] = c.rolling(20).mean()
+    out['SMA_50'] = c.rolling(50).mean()
+    out['EMA_9']  = c.ewm(span=9,  min_periods=9).mean()
+    out['EMA_21'] = c.ewm(span=21, min_periods=21).mean()
 
-    for p in [20, 50, 200]:
-        ma = out[f'SMA_{p}']
-        out[f'Close_SMA{p}_ratio'] = (c - ma) / (ma + 1e-10)
+    # Normalised distance from MA (dimensionless, avoids price-scale leakage)
+    out['Close_SMA20_ratio'] = (c - out['SMA_20']) / (out['SMA_20'] + 1e-10)
+    out['Close_SMA50_ratio'] = (c - out['SMA_50']) / (out['SMA_50'] + 1e-10)
 
-    for p in [7, 14, 21]:
-        out[f'RSI_{p}'] = _rsi(c, p)
+    # RSI: 2 periods (short + standard)
+    out['RSI_7']  = _rsi(c, 7)
+    out['RSI_14'] = _rsi(c, 14)
 
+    # MACD: all 3 components carry distinct info (level, signal, momentum)
     ema12 = c.ewm(span=12, min_periods=12).mean()
     ema26 = c.ewm(span=26, min_periods=26).mean()
     out['MACD_line']   = ema12 - ema26
     out['MACD_signal'] = out['MACD_line'].ewm(span=9, min_periods=9).mean()
     out['MACD_hist']   = out['MACD_line'] - out['MACD_signal']
 
+    # Bollinger Bands: normalised only (raw upper/lower/mid are redundant with Close)
     bb_mid = c.rolling(20).mean()
     bb_std = c.rolling(20).std()
-    out['BB_upper'] = bb_mid + 2 * bb_std
-    out['BB_lower'] = bb_mid - 2 * bb_std
-    out['BB_mid']   = bb_mid
-    out['BB_pct']   = (c - out['BB_lower']) / (out['BB_upper'] - out['BB_lower'] + 1e-10)
-    out['BB_width'] = (out['BB_upper'] - out['BB_lower']) / (bb_mid + 1e-10)
+    bb_up  = bb_mid + 2 * bb_std
+    bb_lo  = bb_mid - 2 * bb_std
+    out['BB_pct']   = (c - bb_lo) / (bb_up - bb_lo + 1e-10)
+    out['BB_width'] = (bb_up - bb_lo) / (bb_mid + 1e-10)
 
-    for p in [7, 14]:
-        out[f'ATR_{p}'] = _atr(out, p)
+    # ATR: single standard period
+    out['ATR_14'] = _atr(out, 14)
 
+    # Stochastic: both K and D (momentum + smoothed)
     low_min  = df['Low'].rolling(14).min()
     high_max = df['High'].rolling(14).max()
     k = 100 * (c - low_min) / (high_max - low_min + 1e-10)
     out['STOCH_K'] = k
     out['STOCH_D'] = k.rolling(3).mean()
 
-    direction   = np.sign(c.diff()).fillna(0)
-    obv_raw     = (direction * out['Volume']).cumsum()
-    out['OBV']  = np.log1p(obv_raw.abs()) * np.sign(obv_raw)
+    # OBV: log-scaled cumulative volume pressure
+    direction  = np.sign(c.diff()).fillna(0)
+    obv_raw    = (direction * out['Volume']).cumsum()
+    out['OBV'] = np.log1p(obv_raw.abs()) * np.sign(obv_raw)
 
-    for p in [14, 20]:
-        out[f'CCI_{p}'] = _cci(out, p)
+    # CCI: single standard period (WILLR_14 dropped -- same concept as STOCH)
+    out['CCI_14'] = _cci(out, 14)
 
-    h14 = df['High'].rolling(14).max()
-    l14 = df['Low'].rolling(14).min()
-    out['WILLR_14'] = -100 * (h14 - c) / (h14 - l14 + 1e-10)
-
-    for p in [1, 5, 10]:
-        out[f'ROC_{p}'] = c.pct_change(p) * 100
-
-    for p in [5, 10]:
-        out[f'MOM_{p}'] = c - c.shift(p)
-
+    # Volume features
     vol = out['Volume']
     out['Volume_log']        = np.log1p(vol)
     out['Volume_MA20_ratio'] = vol / (vol.rolling(20).mean() + 1e-10)
 
+    # Price changes: 2 distinct horizons (ROC dropped -- identical to pct_change)
     out['Price_change_1d'] = c.pct_change(1) * 100
-    out['Price_change_3d'] = c.pct_change(3) * 100
     out['Price_change_5d'] = c.pct_change(5) * 100
 
+    # Volatility: 2 horizons (short + medium)
     ret = c.pct_change()
-    for p in [5, 10, 20]:
-        out[f'Volatility_{p}d'] = ret.rolling(p).std() * 100
+    out['Volatility_5d']  = ret.rolling(5).std()  * 100
+    out['Volatility_20d'] = ret.rolling(20).std() * 100
 
+    # Daily range normalised
     out['HL_range_pct'] = (out['High'] - out['Low']) / (c + 1e-10) * 100
-    out['HL_vs_ATR14']  = (out['High'] - out['Low']) / (out['ATR_14'] + 1e-10)
 
     return out
 
 
-# 52 indicator columns — identical to FEATURE_COLS in train_lstm.py
+# 32 indicator columns (max 2 per indicator family to limit multicollinearity)
 INDICATOR_COLS = [
     'Open', 'High', 'Low', 'Close', 'Volume',
-    'SMA_5', 'SMA_10', 'SMA_20', 'SMA_50', 'SMA_100', 'SMA_200',
-    'EMA_9', 'EMA_21', 'EMA_50', 'EMA_100',
-    'Close_SMA20_ratio', 'Close_SMA50_ratio', 'Close_SMA200_ratio',
-    'RSI_7', 'RSI_14', 'RSI_21',
+    'SMA_20', 'SMA_50',
+    'EMA_9', 'EMA_21',
+    'Close_SMA20_ratio', 'Close_SMA50_ratio',
+    'RSI_7', 'RSI_14',
     'MACD_line', 'MACD_signal', 'MACD_hist',
-    'BB_upper', 'BB_lower', 'BB_mid', 'BB_pct', 'BB_width',
-    'ATR_7', 'ATR_14',
+    'BB_pct', 'BB_width',
+    'ATR_14',
     'STOCH_K', 'STOCH_D',
     'OBV',
-    'CCI_14', 'CCI_20',
-    'WILLR_14',
-    'ROC_1', 'ROC_5', 'ROC_10',
-    'MOM_5', 'MOM_10',
+    'CCI_14',
     'Volume_log', 'Volume_MA20_ratio',
-    'Price_change_1d', 'Price_change_3d', 'Price_change_5d',
-    'Volatility_5d', 'Volatility_10d', 'Volatility_20d',
-    'HL_range_pct', 'HL_vs_ATR14',
+    'Price_change_1d', 'Price_change_5d',
+    'Volatility_5d', 'Volatility_20d',
+    'HL_range_pct',
 ]
 
 
@@ -187,7 +181,7 @@ def load_and_prepare_data(csv_file):
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
-    print("Computing 52 technical indicators...")
+    print("Computing technical indicators (reduced set)...")
     df = compute_technical_indicators(df)
     df = df.dropna(subset=INDICATOR_COLS).reset_index(drop=True)
 
@@ -195,34 +189,32 @@ def load_and_prepare_data(csv_file):
     return df
 
 
-def create_rich_features(df, lags=[1, 2, 3, 5, 10]):
+def create_rich_features(df, lags=[1, 3, 5]):
     """
-    Build the full heavy feature set:
-      52 technical indicators
-    + Close lag features   (×5 periods)
-    + Volume lag features  (×5 periods)
-    + Price change 10d (not in base indicators)
-    + Volatility_30d
-    + RSI slope (RSI_14 change over 3 days)
-    + MACD acceleration (hist change over 1 day)
-    + BB squeeze flag (BB_width vs its 20-day mean)
-    = ~70 features
+    Build the heavy feature set (reduced to ~42 features):
+      30 technical indicators (max 2 per family)
+    + Close lags x3 (1, 3, 5 days)
+    + Volume lags x2 (1, 5 days)
+    + RSI14 slope over 3 days (momentum-of-momentum)
+    + MACD acceleration (histogram first difference)
+    + BB squeeze (BB_width vs its 20-day mean)
     """
     keep = ['Date'] + INDICATOR_COLS if 'Date' in df.columns else INDICATOR_COLS
     out  = df[keep].copy()
 
-    # Close and Volume lags
+    # Close lags: 3 periods (reduced from 5)
     for lag in lags:
-        out[f'Close_lag_{lag}']  = out['Close'].shift(lag)
-        out[f'Volume_lag_{lag}'] = out['Volume'].shift(lag)
+        out[f'Close_lag_{lag}'] = out['Close'].shift(lag)
 
-    # Extra derived features
-    out['Price_change_10d'] = out['Close'].pct_change(10) * 100
-    out['Volatility_30d']   = out['Close'].pct_change().rolling(30).std() * 100
-    out['RSI14_slope_3d']   = out['RSI_14'].diff(3)               # RSI momentum
-    out['MACD_accel']       = out['MACD_hist'].diff(1)             # MACD acceleration
-    bb_width_ma             = out['BB_width'].rolling(20).mean()
-    out['BB_squeeze']       = out['BB_width'] / (bb_width_ma + 1e-10)  # <1 = squeeze
+    # Volume lags: 2 periods only
+    out['Volume_lag_1'] = out['Volume'].shift(1)
+    out['Volume_lag_5'] = out['Volume'].shift(5)
+
+    # Derived momentum features
+    out['RSI14_slope_3d'] = out['RSI_14'].diff(3)
+    out['MACD_accel']     = out['MACD_hist'].diff(1)
+    bb_width_ma           = out['BB_width'].rolling(20).mean()
+    out['BB_squeeze']     = out['BB_width'] / (bb_width_ma + 1e-10)
 
     # Target
     out['Target'] = out['Close'].shift(-1)
