@@ -243,6 +243,12 @@ def load_model_predictions(csv_file):
                'atr': df_raw['ATR_14'].iloc[i],
                'volatility': df_raw['Volatility'].iloc[i],
                'trend': df_raw['Trend'].iloc[i],
+               'macd_hist': df_raw['MACD_hist'].iloc[i],
+               'bb_pct': df_raw['BB_pct'].iloc[i],
+               'stoch_k': df_raw['STOCH_K'].iloc[i],
+               'volume_ratio': df_raw['Volume_MA20_ratio'].iloc[i],
+               'rsi_7': df_raw['RSI_7'].iloc[i],
+               'sma50_ratio': df_raw['Close_SMA50_ratio'].iloc[i],
                'actual_next_close': df_raw['Close'].iloc[i + 1]}
 
         for name, (mdl, scl, feats) in loaded_models.items():
@@ -365,6 +371,12 @@ def _synthetic_signals(df_raw):
             'atr':               df_raw['ATR_14'].iloc[i],
             'volatility':        vol,
             'trend':             tr,
+            'macd_hist':         df_raw['MACD_hist'].iloc[i],
+            'bb_pct':            df_raw['BB_pct'].iloc[i],
+            'stoch_k':           df_raw['STOCH_K'].iloc[i],
+            'volume_ratio':      df_raw['Volume_MA20_ratio'].iloc[i],
+            'rsi_7':             df_raw['RSI_7'].iloc[i],
+            'sma50_ratio':       df_raw['Close_SMA50_ratio'].iloc[i],
             'actual_next_close': df_raw['Close'].iloc[i + 1],
         }
         for name, score in zip(names, scores):
@@ -385,13 +397,19 @@ MODEL_NAMES = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy', 'random
 
 def build_state(row):
     """
-    Enhanced state vector (24 dims):
+    Enhanced state vector (28 dims):
       7 model signals    (encoded: LONG=1, SHORT=-1, HOLD=0)
       7 model probs      (0..1, uses per-trade ensemble prob where available)
       RSI_14 normalised  (-1..1 mapped from 0..100)
+      RSI_7  normalised  (-1..1 mapped from 0..100, shorter-term momentum)
       Trend              (already a ratio)
       Volatility         (normalized)
       ATR                (normalized by close price)
+      MACD histogram     (momentum direction/strength, normalized)
+      Bollinger %B       (0..1 position within bands, centered at 0)
+      Stochastic %K      (0..100 normalized to -1..1)
+      Volume ratio       (current vol / 20-day avg, normalized)
+      SMA50 distance     (Close vs SMA50 ratio)
       Model agreement    (std of model signals)
       Avg model confidence (mean of probs)
       Signal consensus   (majority vote: 1=LONG, -1=SHORT, 0=HOLD)
@@ -412,6 +430,7 @@ def build_state(row):
 
     # Market indicators
     state.append((float(row.get('rsi', 50)) - 50) / 50)
+    state.append((float(row.get('rsi_7', 50)) - 50) / 50)  # short-term RSI
     state.append(float(row.get('trend', 0)))
 
     # Volatility (normalized)
@@ -422,6 +441,21 @@ def build_state(row):
     close = float(row.get('close', 1))
     atr = float(row.get('atr', 0))
     state.append(atr / (close + 1e-10))
+
+    # Chart indicators
+    macd_hist = float(row.get('macd_hist', 0))
+    state.append(np.clip(macd_hist / (close + 1e-10) * 100, -5, 5))  # MACD histogram normalized
+
+    bb_pct = float(row.get('bb_pct', 0.5))
+    state.append((bb_pct - 0.5) * 2)  # center at 0, range roughly -1..1
+
+    stoch_k = float(row.get('stoch_k', 50))
+    state.append((stoch_k - 50) / 50)  # normalize to -1..1
+
+    vol_ratio = float(row.get('volume_ratio', 1.0))
+    state.append(np.clip((vol_ratio - 1.0), -2, 2))  # centered at 0, clipped
+
+    state.append(float(row.get('sma50_ratio', 0)))  # already a ratio
 
     # Derived features: model agreement metrics
     state.append(np.std(signals))  # disagreement measure
@@ -450,7 +484,7 @@ def build_state(row):
     return state_array
 
 
-STATE_DIM  = 22   # enhanced state representation (7 models × 2 + 8 market features)
+STATE_DIM  = 28   # enhanced state: 7 models × 2 + 14 market/chart features
 ACTION_DIM = 3    # LONG, SHORT, HOLD
 
 
@@ -680,8 +714,8 @@ class TradingEnv:
 
         # ATR-based TP/SL: more robust than return-std (consistent with model scripts)
         atr    = max(float(row.get('atr', 0.0)), 0.01 * close)  # fallback: 1% of price
-        sl_dist = 1.0 * atr
-        tp_dist = 1.5 * atr
+        sl_dist = 1.5 * atr
+        tp_dist = 2.0 * atr
 
         if action == ACTION_HOLD:
             reward = REWARD_HOLD

@@ -393,7 +393,7 @@ def train_xgboost_model(csv_file, n_estimators=1000, learning_rate=0.01, max_dep
 
     # Adaptive threshold: 0.3x daily vol (min 0.3%)
     recent_ret_pct = df['Close'].pct_change().tail(20).std() * 100
-    sig_threshold  = max(0.3 * recent_ret_pct, 0.3)
+    sig_threshold  = max(0.5 * recent_ret_pct, 0.5)
 
     if expected_move_pct > sig_threshold:
         signal = "BUY (LONG)"
@@ -409,8 +409,8 @@ def train_xgboost_model(csv_file, n_estimators=1000, learning_rate=0.01, max_dep
     h, l, c = df['High'], df['Low'], df['Close']
     tr  = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
     atr = float(tr.ewm(span=14, min_periods=14).mean().iloc[-1])
-    stop_loss_distance   = 1.0 * atr
-    take_profit_distance = 1.5 * atr
+    stop_loss_distance   = 1.5 * atr
+    take_profit_distance = 2.0 * atr
     volatility           = df['Close'].tail(20).pct_change().dropna().std() * today_price
 
     if signal == "BUY (LONG)":

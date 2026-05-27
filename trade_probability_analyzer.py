@@ -21,7 +21,7 @@ from scipy import stats
 
 # Multi-Day Prediction Settings
 PREDICTION_DAYS = 5  # Number of days to predict ahead (5 = 1 trading week)
-MIN_CONFIDENCE_THRESHOLD = 60.0  # Minimum win probability to recommend trade (%)
+MIN_CONFIDENCE_THRESHOLD = 65.0  # Minimum win probability to recommend trade (%)
 
 # Monte Carlo Simulation Settings
 MONTE_CARLO_SIMULATIONS = 1000  # Number of random simulations (more = accurate but slower)
@@ -39,8 +39,8 @@ WEIGHT_MONTE_CARLO = 0.35  # Weight for Monte Carlo simulation
 WEIGHT_PATTERN = 0.25  # Weight for historical pattern matching
 
 # Confidence Levels
-CONFIDENCE_HIGH = 75.0  # Above this = HIGH confidence
-CONFIDENCE_MEDIUM = 65.0  # Between medium and high = MEDIUM confidence
+CONFIDENCE_HIGH = 80.0  # Above this = HIGH confidence
+CONFIDENCE_MEDIUM = 70.0  # Between medium and high = MEDIUM confidence
 # Below CONFIDENCE_MEDIUM = LOW confidence
 
 
