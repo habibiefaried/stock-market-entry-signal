@@ -135,9 +135,9 @@ FEATURES = [
 # MAIN
 # ---------------------------------------------------------------------------
 
-def run_adaboost(csv_file, n_estimators=2000, learning_rate=0.01, max_depth=1):
+def run_adaboost(csv_file, n_estimators=500, learning_rate=0.05, max_depth=3):
     print("=" * 60)
-    print("ADABOOST MODEL (Decision Stumps)")
+    print("ADABOOST MODEL")
     print("=" * 60)
 
     df = pd.read_csv(csv_file)
@@ -378,8 +378,8 @@ def run_adaboost(csv_file, n_estimators=2000, learning_rate=0.01, max_depth=1):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='AdaBoost Model')
     parser.add_argument('csv_file', type=str, help='Path to CSV file')
-    parser.add_argument('--n_estimators',  type=int,   default=2000)
-    parser.add_argument('--learning_rate', type=float, default=0.01)
-    parser.add_argument('--max_depth',     type=int,   default=1)
+    parser.add_argument('--n_estimators',  type=int,   default=500)
+    parser.add_argument('--learning_rate', type=float, default=0.05)
+    parser.add_argument('--max_depth',     type=int,   default=3)
     args = parser.parse_args()
     run_adaboost(args.csv_file, args.n_estimators, args.learning_rate, args.max_depth)

@@ -248,7 +248,7 @@ def calculate_direction_metrics(y_true, y_pred):
 
 def train_lightgbm_heavy_model(
     csv_file,
-    n_estimators=5000,
+    n_estimators=3000,
     learning_rate=0.005,
     num_leaves=63,
     min_data_in_leaf=20,

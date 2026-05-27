@@ -249,7 +249,7 @@ def calculate_direction_metrics(y_true, y_pred):
 
 def train_xgboost_heavy_model(
     csv_file,
-    n_estimators=5000,
+    n_estimators=3000,
     learning_rate=0.005,
     max_depth=8,
     min_child_weight=3,

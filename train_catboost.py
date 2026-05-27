@@ -148,7 +148,7 @@ def create_lag_features(df, feature_cols):
 # MAIN
 # ---------------------------------------------------------------------------
 
-def run_catboost(csv_file, n_estimators=5000, learning_rate=0.005, max_depth=8):
+def run_catboost(csv_file, n_estimators=2000, learning_rate=0.01, max_depth=6):
     print("=" * 60)
     print("CATBOOST MODEL")
     print("=" * 60)
@@ -195,6 +195,9 @@ def run_catboost(csv_file, n_estimators=5000, learning_rate=0.005, max_depth=8):
         verbose=100,
         early_stopping_rounds=50,
         thread_count=-1,
+        l2_leaf_reg=3,
+        random_strength=1,
+        bagging_temperature=0.5,
     )
 
     model.fit(
@@ -406,8 +409,8 @@ def run_catboost(csv_file, n_estimators=5000, learning_rate=0.005, max_depth=8):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='CatBoost Model')
     parser.add_argument('csv_file', type=str, help='Path to CSV file')
-    parser.add_argument('--n_estimators',  type=int, default=5000)
-    parser.add_argument('--learning_rate', type=float, default=0.005)
-    parser.add_argument('--max_depth',     type=int, default=8)
+    parser.add_argument('--n_estimators',  type=int, default=2000)
+    parser.add_argument('--learning_rate', type=float, default=0.01)
+    parser.add_argument('--max_depth',     type=int, default=6)
     args = parser.parse_args()
     run_catboost(args.csv_file, args.n_estimators, args.learning_rate, args.max_depth)

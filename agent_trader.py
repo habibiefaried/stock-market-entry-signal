@@ -223,8 +223,6 @@ def load_model_predictions(csv_file):
         'lightgbm':       ('lightgbm_model.pkl',        'lightgbm_scaler.pkl',       'lightgbm_features.txt'),
         'lightgbm_heavy': ('lightgbm_heavy_model.pkl', 'lightgbm_heavy_scaler.pkl', 'lightgbm_heavy_features.txt'),
         'randomforest':   ('randomforest_model.pkl',   'randomforest_scaler.pkl',   'randomforest_features.txt'),
-        'catboost':       ('catboost_model.pkl',       'catboost_scaler.pkl',       'catboost_features.txt'),
-        'adaboost':       ('adaboost_model.pkl',       'adaboost_scaler.pkl',       'adaboost_features.txt'),
     }
 
     # Load statistical ensemble signal from saved file (written after training)
@@ -444,9 +442,9 @@ def _synthetic_signals(df_raw):
         vol  = df_raw['Volatility'].iloc[i]
         tr   = df_raw['Trend'].iloc[i]
 
-        # 8 synthetic model proxies with slight random noise
+        # 6 synthetic model proxies with slight random noise
         np.random.seed(i)
-        noise = np.random.normal(0, 0.05, 8)
+        noise = np.random.normal(0, 0.05, 6)
 
         def _sig(score):
             if score > 0.1:  return 1
@@ -463,11 +461,10 @@ def _synthetic_signals(df_raw):
             (rsi - 50) / 50 * 0.7 + tr + noise[3],
             macd / (abs(macd) + 1e-5) * 0.3 + tr * 0.5 + noise[4],
             (rsi - 50) / 50 * 0.6 + macd / (abs(macd) + 1e-5) * 0.4 + noise[5],  # statistical proxy
-            tr * 1.2 + (rsi - 50) / 50 * 0.5 + noise[6],                        # catboost proxy
-            macd / (abs(macd) + 1e-5) * 0.7 + tr * 0.3 + noise[7],               # adaboost proxy
+            tr * 1.2 + (rsi - 50) / 50 * 0.5 + noise[5],                        # statistical proxy
         ]
 
-        names = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy', 'randomforest', 'statistical', 'catboost', 'adaboost']
+        names = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy', 'randomforest', 'statistical']
         row   = {
             'date':              df_raw['Date'].iloc[i] if 'Date' in df_raw.columns else i,
             'close':             df_raw['Close'].iloc[i],
@@ -498,13 +495,13 @@ def _synthetic_signals(df_raw):
 # ---------------------------------------------------------------------------
 
 MODEL_NAMES = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy', 'randomforest',
-               'statistical', 'catboost', 'adaboost']
+               'statistical']
 
 def build_state(row):
     """
-    Enhanced state vector (31 dims):
-      8 model signals    (encoded: LONG=1, SHORT=-1, HOLD=0)
-      8 model probs      (0..1, uses per-trade ensemble prob where available)
+    Enhanced state vector (27 dims):
+      6 model signals    (encoded: LONG=1, SHORT=-1, HOLD=0)
+      6 model probs      (0..1, uses per-trade ensemble prob where available)
       RSI_14 normalised  (-1..1 mapped from 0..100)
       RSI_7  normalised  (-1..1 mapped from 0..100, shorter-term momentum)
       Trend              (already a ratio)
@@ -592,7 +589,7 @@ def build_state(row):
     return state_array
 
 
-STATE_DIM  = 31   # enhanced state: 8 models × 2 + 15 market/chart/regime features
+STATE_DIM  = 27   # enhanced state: 6 models × 2 + 15 market/chart/regime features
 ACTION_DIM = 3    # LONG, SHORT, HOLD
 
 

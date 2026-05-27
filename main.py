@@ -1513,8 +1513,6 @@ Default: 132 months (11 years) of historical data.
     # Define models to run
     models = [
         ('Statistical',    'train_statistical.py'),
-        ('AdaBoost',       'train_adaboost.py'),
-        ('CatBoost',       'train_catboost.py'),
         ('XGBoost',        'train_xgboost.py'),
         ('XGBoost-Heavy',  'train_xgboost_heavy.py'),
         ('LightGBM',       'train_lightgbm.py'),
@@ -1525,7 +1523,7 @@ Default: 132 months (11 years) of historical data.
     # Run all models in parallel using ThreadPoolExecutor
     results = []
 
-    with ThreadPoolExecutor(max_workers=9) as executor:
+    with ThreadPoolExecutor(max_workers=7) as executor:
         # Submit all tasks
         future_to_model = {
             executor.submit(run_model, name, script, csv_file): name
