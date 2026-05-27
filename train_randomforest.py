@@ -177,7 +177,7 @@ def walk_forward_validation(df, features, n_splits=5):
 
     return splits
 
-def train_randomforest_model(csv_file, n_estimators=500, max_depth=15, max_features=30):
+def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_features=30):
     """
     Train Random Forest model with walk-forward validation
 
@@ -564,7 +564,7 @@ def train_randomforest_model(csv_file, n_estimators=500, max_depth=15, max_featu
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train Random Forest model with walk-forward validation')
     parser.add_argument('csv_file', type=str, help='Path to CSV file with stock data')
-    parser.add_argument('--n_estimators', type=int, default=500, help='Number of trees (default: 500)')
+    parser.add_argument('--n_estimators', type=int, default=1000, help='Number of trees (default: 1000)')
     parser.add_argument('--max_depth', type=int, default=15, help='Maximum tree depth (default: 15)')
     parser.add_argument('--max_features', type=int, default=30, help='Max features to use (default: 30)')
 

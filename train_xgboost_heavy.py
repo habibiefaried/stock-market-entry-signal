@@ -249,7 +249,7 @@ def calculate_direction_metrics(y_true, y_pred):
 
 def train_xgboost_heavy_model(
     csv_file,
-    n_estimators=3000,
+    n_estimators=5000,
     learning_rate=0.005,
     max_depth=8,
     min_child_weight=3,
@@ -548,7 +548,7 @@ Examples:
         '''
     )
     parser.add_argument('csv_file',          type=str)
-    parser.add_argument('--n_estimators',    type=int,   default=3000)
+    parser.add_argument('--n_estimators',    type=int,   default=5000)
     parser.add_argument('--learning_rate',   type=float, default=0.005)
     parser.add_argument('--max_depth',       type=int,   default=8)
     parser.add_argument('--min_child_weight',type=int,   default=3)

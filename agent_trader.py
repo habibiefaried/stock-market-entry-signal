@@ -160,6 +160,42 @@ def compute_indicators(df):
     return out.dropna().reset_index(drop=True)
 
 
+def compute_regime(df, idx):
+    """
+    Classify market regime at row idx: 1.0 = BULL, -1.0 = BEAR, 0.0 = RANGING.
+
+    Uses SMA structure (price vs SMA20/SMA50, SMA50 slope) and RSI momentum.
+    Requires at least 50 rows of history for stable SMA50 slope.
+    """
+    sma20_ratio = float(df['Close_SMA20_ratio'].iloc[idx])
+    sma50_ratio = float(df['Close_SMA50_ratio'].iloc[idx])
+    rsi = float(df['RSI_14'].iloc[idx])
+
+    # SMA50 slope over last 10 bars (annualised-ish direction signal)
+    if idx >= 10:
+        sma50_now = float(df['SMA_50'].iloc[idx])
+        sma50_prev = float(df['SMA_50'].iloc[idx - 10])
+        sma50_slope = (sma50_now - sma50_prev) / (abs(sma50_prev) + 1e-10)
+    else:
+        sma50_slope = 0.0
+
+    bull_score = 0
+    if sma20_ratio > 0:
+        bull_score += 1      # price above SMA20
+    if sma50_ratio > 0:
+        bull_score += 1      # price above SMA50
+    if sma50_slope > 0.001:
+        bull_score += 1      # SMA50 rising
+    if rsi > 50:
+        bull_score += 1      # momentum bullish
+
+    if bull_score >= 3:
+        return 1.0   # BULL
+    elif bull_score <= 1:
+        return -1.0   # BEAR
+    return 0.0         # RANGING / NEUTRAL
+
+
 # ---------------------------------------------------------------------------
 # WALK-FORWARD MODEL SIGNAL GENERATOR
 # (simulates what each model would have predicted out-of-sample)
@@ -249,6 +285,7 @@ def load_model_predictions(csv_file):
                'volume_ratio': df_raw['Volume_MA20_ratio'].iloc[i],
                'rsi_7': df_raw['RSI_7'].iloc[i],
                'sma50_ratio': df_raw['Close_SMA50_ratio'].iloc[i],
+               'regime': compute_regime(df_raw, i),
                'actual_next_close': df_raw['Close'].iloc[i + 1]}
 
         for name, (mdl, scl, feats) in loaded_models.items():
@@ -377,6 +414,7 @@ def _synthetic_signals(df_raw):
             'volume_ratio':      df_raw['Volume_MA20_ratio'].iloc[i],
             'rsi_7':             df_raw['RSI_7'].iloc[i],
             'sma50_ratio':       df_raw['Close_SMA50_ratio'].iloc[i],
+            'regime':            compute_regime(df_raw, i),
             'actual_next_close': df_raw['Close'].iloc[i + 1],
         }
         for name, score in zip(names, scores):
@@ -457,6 +495,9 @@ def build_state(row):
 
     state.append(float(row.get('sma50_ratio', 0)))  # already a ratio
 
+    # Market regime (BULL=1, BEAR=-1, RANGING=0)
+    state.append(float(row.get('regime', 0)))
+
     # Derived features: model agreement metrics
     state.append(np.std(signals))  # disagreement measure
     state.append(np.mean(probs))   # avg confidence
@@ -484,7 +525,7 @@ def build_state(row):
     return state_array
 
 
-STATE_DIM  = 28   # enhanced state: 7 models × 2 + 14 market/chart features
+STATE_DIM  = 29   # enhanced state: 7 models × 2 + 15 market/chart/regime features
 ACTION_DIM = 3    # LONG, SHORT, HOLD
 
 
@@ -553,7 +594,7 @@ if TORCH_AVAILABLE:
             return action.item(), probs[action].item(), value.item()
 
         def update(self, states, actions, old_log_probs, returns, advantages,
-                   clip_eps=0.2, entropy_coef=0.02, value_coef=0.5, n_epochs=10):
+                   clip_eps=0.2, entropy_coef=0.02, value_coef=0.5, n_epochs=15):
             """Proper PPO update with backpropagation"""
             states = torch.FloatTensor(np.array(states))
             actions = torch.LongTensor(actions)
@@ -640,7 +681,7 @@ class PPOPolicy:
         return action, probs[action], value
 
     def update(self, states, actions, old_log_probs, returns, advantages,
-               clip_eps=0.2, entropy_coef=0.02, n_epochs=4):
+               clip_eps=0.2, entropy_coef=0.02, n_epochs=6):
         """PPO clipped surrogate update (analytical gradient, no autograd)."""
         for _ in range(n_epochs):
             for s, a, old_lp, ret, adv in zip(states, actions, old_log_probs,
@@ -781,6 +822,16 @@ class TradingEnv:
         elif action == ACTION_SHORT and consensus == -1:
             reward += REWARD_CORRECT_DIR
 
+        # Counter-regime penalty: force HOLD on trades against the prevailing trend.
+        # The agent learns that counter-regime actions are worse than just holding.
+        regime = float(row.get('regime', 0))
+        counter_regime = (action == ACTION_LONG and regime < -0.5) or \
+                         (action == ACTION_SHORT and regime > 0.5)
+        if counter_regime:
+            reward  = REWARD_HOLD * MAX_DAYS - 0.3  # worse than a clean HOLD
+            outcome = 'HOLD'
+            done    = True
+
         info = {'outcome': outcome, 'entry': entry, 'sl': sl_price, 'tp': tp_price,
                 'days': min(days_out, MAX_DAYS)}
         self.day += 1
@@ -847,7 +898,7 @@ def compute_returns(rewards, gamma=0.99):
     return returns
 
 
-def train_ppo(env, policy, n_episodes=2000, batch_size=64, gamma=0.99):
+def train_ppo(env, policy, n_episodes=2000, batch_size=128, gamma=0.99):
     print(f"  Training PPO agent ({n_episodes} episodes)...")
 
     ep_rewards = []
@@ -942,8 +993,21 @@ def backtest(env, policy, n_episodes=None):
         state = env.reset(idx=ep_i)
         done  = False
         total_r = 0.0
+        regime_holds = 0
         while not done:
             action, prob, _ = policy.act_greedy(state)
+
+            # Hard regime override (mirrors get_current_action for consistency)
+            regime = float(env.signals_df.iloc[env.ep_idx].get('regime', 0))
+            if action == ACTION_LONG and regime < -0.5:
+                action = ACTION_HOLD
+                prob = 0.5
+                regime_holds += 1
+            elif action == ACTION_SHORT and regime > 0.5:
+                action = ACTION_HOLD
+                prob = 0.5
+                regime_holds += 1
+
             state, reward, done, info = env.step(action)
             total_r += reward
         trades.append({
@@ -956,6 +1020,7 @@ def backtest(env, policy, n_episodes=None):
             'sl':       info.get('sl', 0),
             'tp':       info.get('tp', 0),
             'days':     info.get('days', 1),
+            'regime_forced_hold': regime_holds > 0,
         })
 
     return pd.DataFrame(trades)
@@ -1051,11 +1116,20 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False):
     else:
         action, prob, _ = policy.act_greedy(state)
 
+    # Regime override: flip counter-regime trades to HOLD
+    regime = float(last_row.get('regime', 0))
+    if action == ACTION_LONG and regime < -0.5:
+        action = ACTION_HOLD
+        prob = 0.5
+    elif action == ACTION_SHORT and regime > 0.5:
+        action = ACTION_HOLD
+        prob = 0.5
+
     # ATR-based SL/TP (consistent with training environment and model scripts)
     close   = float(last_row['close'])
     atr     = max(float(last_row.get('atr', 0.0)), 0.01 * close)
-    sl_dist = 1.0 * atr
-    tp_dist = 1.5 * atr
+    sl_dist = 1.5 * atr
+    tp_dist = 2.0 * atr
 
     if action == ACTION_LONG:
         sl = close - sl_dist
@@ -1176,9 +1250,9 @@ def run_agent(csv_file):
 
     # Use more episodes for PyTorch (better gradients handle more data)
     if TORCH_AVAILABLE:
-        n_ep = min(max(len(train_sig) * 15, 6000), 40000)
+        n_ep = min(max(len(train_sig) * 20, 10000), 80000)
     else:
-        n_ep = min(max(len(train_sig) * 10, 4000), 30000)
+        n_ep = min(max(len(train_sig) * 15, 8000), 60000)
 
     est_sec = max(1, n_ep // 7500)
     print(f"  Episodes planned: {n_ep}  (estimated time: ~{est_sec}-{est_sec*2} seconds)")

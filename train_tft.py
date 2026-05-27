@@ -495,7 +495,7 @@ def calculate_direction_metrics(y_true, y_pred):
 def train_tft_model(
     csv_file,
     lookback=60,
-    epochs=75,
+    epochs=150,
     batch_size=32,
     # CNN
     cnn1_filters=64,
@@ -864,7 +864,7 @@ Architecture parameters:
     )
     parser.add_argument('csv_file',          type=str)
     parser.add_argument('--lookback',        type=int,   default=60)
-    parser.add_argument('--epochs',          type=int,   default=75)
+    parser.add_argument('--epochs',          type=int,   default=150)
     parser.add_argument('--batch_size',      type=int,   default=32)
     # CNN
     parser.add_argument('--cnn1_filters',    type=int,   default=64)

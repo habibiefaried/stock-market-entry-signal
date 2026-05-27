@@ -248,7 +248,7 @@ def calculate_direction_metrics(y_true, y_pred):
 
 def train_lightgbm_heavy_model(
     csv_file,
-    n_estimators=3000,
+    n_estimators=5000,
     learning_rate=0.005,
     num_leaves=63,
     min_data_in_leaf=20,
@@ -542,7 +542,7 @@ Examples:
         '''
     )
     parser.add_argument('csv_file',            type=str)
-    parser.add_argument('--n_estimators',      type=int,   default=3000)
+    parser.add_argument('--n_estimators',      type=int,   default=5000)
     parser.add_argument('--learning_rate',     type=float, default=0.005)
     parser.add_argument('--num_leaves',        type=int,   default=63)
     parser.add_argument('--min_data_in_leaf',  type=int,   default=20)

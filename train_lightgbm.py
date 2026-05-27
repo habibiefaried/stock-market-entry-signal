@@ -229,7 +229,7 @@ def calculate_direction_metrics(y_true, y_pred):
 
     return accuracy, precision, recall, f1
 
-def train_lightgbm_model(csv_file, n_estimators=1000, learning_rate=0.01, num_leaves=31):
+def train_lightgbm_model(csv_file, n_estimators=2000, learning_rate=0.01, num_leaves=31):
     """
     Main training function for LightGBM model
 
@@ -612,7 +612,7 @@ LightGBM vs XGBoost:
     )
 
     parser.add_argument('csv_file', type=str, help='Path to CSV file with stock data')
-    parser.add_argument('--n_estimators', type=int, default=1000, help='Number of trees (default: 1000)')
+    parser.add_argument('--n_estimators', type=int, default=2000, help='Number of trees (default: 2000)')
     parser.add_argument('--learning_rate', type=float, default=0.01, help='Learning rate (default: 0.01)')
     parser.add_argument('--num_leaves', type=int, default=31, help='Max leaves per tree (default: 31)')
 

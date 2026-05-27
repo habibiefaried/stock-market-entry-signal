@@ -220,7 +220,7 @@ def calculate_direction_metrics(y_true, y_pred):
 
     return accuracy, precision, recall, f1
 
-def train_xgboost_model(csv_file, n_estimators=1000, learning_rate=0.01, max_depth=7):
+def train_xgboost_model(csv_file, n_estimators=2000, learning_rate=0.01, max_depth=7):
     """Main training function for XGBoost model"""
 
     # Load data
@@ -554,7 +554,7 @@ def train_xgboost_model(csv_file, n_estimators=1000, learning_rate=0.01, max_dep
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train XGBoost model for stock price prediction')
     parser.add_argument('csv_file', type=str, help='Path to CSV file with stock data')
-    parser.add_argument('--n_estimators', type=int, default=1000, help='Number of trees (default: 1000)')
+    parser.add_argument('--n_estimators', type=int, default=2000, help='Number of trees (default: 2000)')
     parser.add_argument('--learning_rate', type=float, default=0.01, help='Learning rate (default: 0.01)')
     parser.add_argument('--max_depth', type=int, default=7, help='Max tree depth (default: 7)')
 
