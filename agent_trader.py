@@ -223,33 +223,34 @@ def load_model_predictions(csv_file):
         'lightgbm':       ('lightgbm_model.pkl',        'lightgbm_scaler.pkl',       'lightgbm_features.txt'),
         'lightgbm_heavy': ('lightgbm_heavy_model.pkl', 'lightgbm_heavy_scaler.pkl', 'lightgbm_heavy_features.txt'),
         'randomforest':   ('randomforest_model.pkl',   'randomforest_scaler.pkl',   'randomforest_features.txt'),
+        'catboost':       ('catboost_model.pkl',       'catboost_scaler.pkl',       'catboost_features.txt'),
+        'adaboost':       ('adaboost_model.pkl',       'adaboost_scaler.pkl',       'adaboost_features.txt'),
     }
 
-    # Load LSTM and TFT signals from their saved signal files (written after training)
-    neural_signals = {}
-    for nn_name, sig_file in [('lstm', 'lstm_signal.txt'), ('tft', 'tft_signal.txt')]:
-        sig_path = os.path.join(base_dir, sig_file)
-        if os.path.exists(sig_path):
-            try:
-                sig_data = {}
-                with open(sig_path) as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if not line or ':' not in line:
-                            continue
-                        k, v = line.split(':', 1)
-                        sig_data[k.strip()] = v.strip()
-                neural_signals[nn_name] = {
-                    'signal':       int(float(sig_data.get('signal', 0))),
-                    'prob':         float(sig_data.get('prob', 0.5)),
-                    'ensemble_prob': float(sig_data.get('ensemble_prob', 50.0)) / 100.0,
-                }
-                print(f"  Loaded {nn_name} signal: {neural_signals[nn_name]['signal']} "
-                      f"(prob={neural_signals[nn_name]['prob']:.2f})")
-            except Exception as e:
-                print(f"  Could not read {nn_name} signal file: {e}")
-        else:
-            print(f"  {sig_file} not found - {nn_name} signal will be neutral")
+    # Load statistical ensemble signal from saved file (written after training)
+    statistical_signal = None
+    sig_path = os.path.join(base_dir, 'statistical_signal.txt')
+    if os.path.exists(sig_path):
+        try:
+            sig_data = {}
+            with open(sig_path) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or ':' not in line:
+                        continue
+                    k, v = line.split(':', 1)
+                    sig_data[k.strip()] = v.strip()
+            statistical_signal = {
+                'signal':       int(float(sig_data.get('signal', 0))),
+                'prob':         float(sig_data.get('prob', 0.5)),
+                'ensemble_prob': float(sig_data.get('ensemble_prob', 50.0)) / 100.0,
+            }
+            print(f"  Loaded statistical signal: {statistical_signal['signal']} "
+                  f"(prob={statistical_signal['prob']:.2f})")
+        except Exception as e:
+            print(f"  Could not read statistical_signal.txt: {e}")
+    else:
+        print(f"  statistical_signal.txt not found - signal will be neutral")
 
     loaded_models = {}
     for name, (mf, sf, ff) in model_files.items():
@@ -327,20 +328,20 @@ def load_model_predictions(csv_file):
                 row[f'{name}_signal'] = 0
                 row[f'{name}_prob']   = 0.5
 
-        # LSTM / TFT produce one prediction per run (not per row).
+        # Statistical ensemble produces one prediction per run (not per row).
         # Set neutral for historical rows; only the last row gets the real signal.
-        for nn_name in ['lstm', 'tft']:
-            row[f'{nn_name}_signal'] = 0
-            row[f'{nn_name}_prob']   = 0.5
+        row['statistical_signal'] = 0
+        row['statistical_prob']   = 0.5
 
         records.append(row)
 
-    # Inject LSTM / TFT signals into the LAST row only (the current day).
-    if records:
+    # Inject statistical signal into the LAST row only (the current day).
+    if records and statistical_signal:
         last = records[-1]
-        for nn_name, nn_data in neural_signals.items():
-            last[f'{nn_name}_signal'] = nn_data['signal']
-            last[f'{nn_name}_prob']   = nn_data['ensemble_prob'] if nn_data.get('ensemble_prob', 0) > 0 else nn_data.get('prob', 0.5)
+        last['statistical_signal'] = statistical_signal['signal']
+        last['statistical_prob']   = (statistical_signal['ensemble_prob']
+                                      if statistical_signal.get('ensemble_prob', 0) > 0
+                                      else statistical_signal.get('prob', 0.5))
 
     print(f"  Generated {len(records)} walk-forward rows from {len(loaded_models)} models")
     return pd.DataFrame(records).reset_index(drop=True)
@@ -443,9 +444,9 @@ def _synthetic_signals(df_raw):
         vol  = df_raw['Volatility'].iloc[i]
         tr   = df_raw['Trend'].iloc[i]
 
-        # 7 synthetic model proxies with slight random noise
+        # 8 synthetic model proxies with slight random noise
         np.random.seed(i)
-        noise = np.random.normal(0, 0.05, 7)
+        noise = np.random.normal(0, 0.05, 8)
 
         def _sig(score):
             if score > 0.1:  return 1
@@ -461,11 +462,12 @@ def _synthetic_signals(df_raw):
             tr * 2 + noise[2],
             (rsi - 50) / 50 * 0.7 + tr + noise[3],
             macd / (abs(macd) + 1e-5) * 0.3 + tr * 0.5 + noise[4],
-            (rsi - 50) / 50 * 0.6 + macd / (abs(macd) + 1e-5) * 0.4 + noise[5],  # lstm proxy
-            tr * 1.5 + macd / (abs(macd) + 1e-5) * 0.5 + noise[6],               # tft proxy
+            (rsi - 50) / 50 * 0.6 + macd / (abs(macd) + 1e-5) * 0.4 + noise[5],  # statistical proxy
+            tr * 1.2 + (rsi - 50) / 50 * 0.5 + noise[6],                        # catboost proxy
+            macd / (abs(macd) + 1e-5) * 0.7 + tr * 0.3 + noise[7],               # adaboost proxy
         ]
 
-        names = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy', 'randomforest', 'lstm', 'tft']
+        names = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy', 'randomforest', 'statistical', 'catboost', 'adaboost']
         row   = {
             'date':              df_raw['Date'].iloc[i] if 'Date' in df_raw.columns else i,
             'close':             df_raw['Close'].iloc[i],
@@ -496,13 +498,13 @@ def _synthetic_signals(df_raw):
 # ---------------------------------------------------------------------------
 
 MODEL_NAMES = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy', 'randomforest',
-               'lstm', 'tft']
+               'statistical', 'catboost', 'adaboost']
 
 def build_state(row):
     """
-    Enhanced state vector (29 dims):
-      7 model signals    (encoded: LONG=1, SHORT=-1, HOLD=0)
-      7 model probs      (0..1, uses per-trade ensemble prob where available)
+    Enhanced state vector (31 dims):
+      8 model signals    (encoded: LONG=1, SHORT=-1, HOLD=0)
+      8 model probs      (0..1, uses per-trade ensemble prob where available)
       RSI_14 normalised  (-1..1 mapped from 0..100)
       RSI_7  normalised  (-1..1 mapped from 0..100, shorter-term momentum)
       Trend              (already a ratio)
@@ -590,7 +592,7 @@ def build_state(row):
     return state_array
 
 
-STATE_DIM  = 29   # enhanced state: 7 models × 2 + 15 market/chart/regime features
+STATE_DIM  = 31   # enhanced state: 8 models × 2 + 15 market/chart/regime features
 ACTION_DIM = 3    # LONG, SHORT, HOLD
 
 
@@ -887,13 +889,16 @@ class TradingEnv:
         elif action == ACTION_SHORT and consensus == -1:
             reward += REWARD_CORRECT_DIR
 
-        # Soft counter-regime nudge (does NOT overwrite the real trade outcome).
-        # The hard HOLD override is applied during inference only (backtest / get_current_action).
+        # Regime-aligned reward shaping: agent learns to trade WITH the trend.
         regime = float(row.get('regime', 0))
         counter_regime = (action == ACTION_LONG and regime < -0.5) or \
                          (action == ACTION_SHORT and regime > 0.5)
+        aligned_regime = (action == ACTION_LONG and regime > 0.5) or \
+                         (action == ACTION_SHORT and regime < -0.5)
         if counter_regime:
-            reward -= 0.3   # small nudge: prefer regime-aligned trades
+            reward -= 0.5   # penalty: fighting the trend
+        elif aligned_regime:
+            reward += 0.3   # bonus: trading with the trend
 
         info = {'outcome': outcome, 'entry': entry, 'sl': sl_price, 'tp': tp_price,
                 'days': min(days_out, MAX_DAYS)}
@@ -1056,21 +1061,8 @@ def backtest(env, policy, n_episodes=None):
         state = env.reset(idx=ep_i)
         done  = False
         total_r = 0.0
-        regime_holds = 0
         while not done:
             action, prob, _ = policy.act_greedy(state)
-
-            # Hard regime override (mirrors get_current_action for consistency)
-            regime = float(env.signals_df.iloc[env.ep_idx].get('regime', 0))
-            if action == ACTION_LONG and regime < -0.5:
-                action = ACTION_HOLD
-                prob = 0.5
-                regime_holds += 1
-            elif action == ACTION_SHORT and regime > 0.5:
-                action = ACTION_HOLD
-                prob = 0.5
-                regime_holds += 1
-
             state, reward, done, info = env.step(action)
             total_r += reward
         trades.append({
@@ -1083,7 +1075,6 @@ def backtest(env, policy, n_episodes=None):
             'sl':       info.get('sl', 0),
             'tp':       info.get('tp', 0),
             'days':     info.get('days', 1),
-            'regime_forced_hold': regime_holds > 0,
         })
 
     return pd.DataFrame(trades)
@@ -1178,15 +1169,6 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False):
             prob   = vote_hold / len(votes) if vote_hold > 0 else 0.5
     else:
         action, prob, _ = policy.act_greedy(state)
-
-    # Regime override: flip counter-regime trades to HOLD
-    regime = float(last_row.get('regime', 0))
-    if action == ACTION_LONG and regime < -0.5:
-        action = ACTION_HOLD
-        prob = 0.5
-    elif action == ACTION_SHORT and regime > 0.5:
-        action = ACTION_HOLD
-        prob = 0.5
 
     # ATR-based SL/TP (consistent with training environment and model scripts)
     close   = float(last_row['close'])

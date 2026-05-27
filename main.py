@@ -575,6 +575,32 @@ def generate_agent_html(agent):
     return '\n'.join(h)
 
 
+def _add_model_plots(html, model_name, ticker, date_str):
+    """Reference prediction and feature importance PNGs by relative path."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    safe_name = model_name.lower().replace(' ', '_').replace('-', '_')
+    plots = [
+        (f'{safe_name}_predictions', 'Price Predictions'),
+        (f'{safe_name}_feature_importance', 'Feature Importance'),
+    ]
+    for name_no_ext, title in plots:
+        # PNG will be moved to REPORT/ with stock-date suffix by _cleanup().
+        # Use the final filename so the reference remains valid after the move.
+        final_name = f'{name_no_ext}-{ticker}-{date_str}.png'
+        # Check if it exists now (plain name in base dir) or already in REPORT/
+        plain = os.path.join(base_dir, f'{name_no_ext}.png')
+        suffixed = os.path.join(base_dir, 'REPORT', final_name)
+        exists_now = os.path.exists(plain) or os.path.exists(suffixed)
+        if exists_now:
+            html.append(f'    <div style="margin-top:20px;">')
+            html.append(f'      <h4 style="color:#2c3e50;margin-bottom:12px;">{title}</h4>')
+            html.append(f'      <img src="{final_name}" '
+                       f'style="width:100%;max-width:800px;border-radius:8px;'
+                       f'box-shadow:0 4px 12px rgba(0,0,0,0.1);" '
+                       f'alt="{title}" loading="lazy">')
+            html.append(f'    </div>')
+
+
 def generate_html_report(results, csv_file, output_file, agent_result=None):
     """
     Generate HTML report comparing all models
@@ -589,6 +615,7 @@ def generate_html_report(results, csv_file, output_file, agent_result=None):
     basename = os.path.basename(csv_file)
     parts = basename.split('_')
     ticker = parts[0]
+    date_str = datetime.now().strftime('%Y%m%d')
 
     # Start HTML content
     html = []
@@ -1254,6 +1281,9 @@ def generate_html_report(results, csv_file, output_file, agent_result=None):
                 if prob_html:
                     html.append(prob_html)
 
+                # Embed prediction plots
+                _add_model_plots(html, result['name'], ticker, date_str)
+
                 html.append('    </div>')  # Close model-card
 
         html.append('</div>')  # Close section
@@ -1444,7 +1474,7 @@ Default: 132 months (11 years) of historical data.
 
     parser.add_argument('csv_file', type=str, nargs='?', help='Path to CSV file with stock data (optional if --ticker provided)')
     parser.add_argument('--ticker', type=str, help='Stock ticker to fetch (e.g., MSFT, BTC-USD)')
-    parser.add_argument('--months', type=int, default=132, help='Months of historical data (default: 132 = 11 years)')
+    parser.add_argument('--months', type=int, default=84, help='Months of historical data (default: 84 = 7 years)')
 
     args = parser.parse_args()
 
@@ -1482,8 +1512,9 @@ Default: 132 months (11 years) of historical data.
 
     # Define models to run
     models = [
-        ('LSTM',           'train_lstm.py'),
-        ('TFT',            'train_tft.py'),
+        ('Statistical',    'train_statistical.py'),
+        ('AdaBoost',       'train_adaboost.py'),
+        ('CatBoost',       'train_catboost.py'),
         ('XGBoost',        'train_xgboost.py'),
         ('XGBoost-Heavy',  'train_xgboost_heavy.py'),
         ('LightGBM',       'train_lightgbm.py'),
@@ -1494,7 +1525,7 @@ Default: 132 months (11 years) of historical data.
     # Run all models in parallel using ThreadPoolExecutor
     results = []
 
-    with ThreadPoolExecutor(max_workers=7) as executor:
+    with ThreadPoolExecutor(max_workers=9) as executor:
         # Submit all tasks
         future_to_model = {
             executor.submit(run_model, name, script, csv_file): name
@@ -1533,8 +1564,12 @@ Default: 132 months (11 years) of historical data.
     print("\nGenerating comparison report...")
     generate_html_report(results, csv_file, output_file, agent_result=agent_result)
 
+    # Extract ticker and date for PNG naming
+    ticker = os.path.basename(csv_file).split('_')[0]
+    date_str = datetime.now().strftime('%Y%m%d')
+
     # Move HTML to REPORT/ folder and clean up intermediate files
-    _cleanup(output_file, csv_file)
+    _cleanup(output_file, csv_file, ticker, date_str)
 
     print("\n" + "="*60)
     print("ALL DONE!")
@@ -1544,7 +1579,7 @@ Default: 132 months (11 years) of historical data.
     print("\n")
 
 
-def _cleanup(report_file, csv_file):
+def _cleanup(report_file, csv_file, ticker, date_str):
     """Move HTML report to REPORT/ folder and delete all intermediate files."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     report_dir = os.path.join(base_dir, 'REPORT')
@@ -1562,11 +1597,28 @@ def _cleanup(report_file, csv_file):
     except OSError as e:
         print(f"\nWarning: Could not move report: {e}")
 
+    # Move and rename prediction PNGs to REPORT/ with stock-date suffix
+    png_moved = 0
+    for f in glob.glob(os.path.join(base_dir, '*.png')):
+        try:
+            png_name = os.path.basename(f)
+            # Insert stock-date suffix before .png: model_type.png → model_type-TICKER-DATE.png
+            name_no_ext = png_name.replace('.png', '')
+            new_name = f'{name_no_ext}-{ticker}-{date_str}.png'
+            png_dest = os.path.join(report_dir, new_name)
+            if os.path.exists(png_dest):
+                os.remove(png_dest)
+            os.rename(f, png_dest)
+            png_moved += 1
+        except OSError:
+            pass
+    if png_moved:
+        print(f"Moved {png_moved} plots to REPORT/")
+
     # Delete intermediate files
     patterns = [
         '*.pkl', '*.keras', '*.npz', '*.pt',
         '*_hash.txt', '*_signal.txt', '*_model_info.txt', '*_features.txt',
-        '*.png',
     ]
     deleted = 0
     for pattern in patterns:

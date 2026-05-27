@@ -232,3 +232,4 @@ train_arima.py
 *.txt
 *.npz
 *.pt
+catboost_info/
