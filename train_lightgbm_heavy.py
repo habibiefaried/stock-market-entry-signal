@@ -248,7 +248,7 @@ def calculate_direction_metrics(y_true, y_pred):
 
 def train_lightgbm_heavy_model(
     csv_file,
-    n_estimators=3000,
+    n_estimators=5000,
     learning_rate=0.005,
     num_leaves=63,
     min_data_in_leaf=20,
@@ -390,7 +390,7 @@ def train_lightgbm_heavy_model(
     expected_move_pct = (expected_move / today_price) * 100
 
     vol_20d_pct    = df['Volatility_20d'].iloc[-1]
-    sig_threshold  = max(0.3 * vol_20d_pct, 0.3)
+    sig_threshold  = max(0.5 * vol_20d_pct, 0.5)
 
     if expected_move_pct > sig_threshold:
         signal       = "BUY (LONG)"
@@ -403,8 +403,8 @@ def train_lightgbm_heavy_model(
         signal_emoji = "[HOLD]"
 
     atr = float(df['ATR_14'].iloc[-1])
-    stop_loss_distance   = 1.0 * atr
-    take_profit_distance = 1.5 * atr
+    stop_loss_distance   = 1.5 * atr
+    take_profit_distance = 2.0 * atr
     volatility           = df[['Close']].tail(20)['Close'].pct_change().dropna().std() * today_price
 
     if signal == "BUY (LONG)":
@@ -542,7 +542,7 @@ Examples:
         '''
     )
     parser.add_argument('csv_file',            type=str)
-    parser.add_argument('--n_estimators',      type=int,   default=3000)
+    parser.add_argument('--n_estimators',      type=int,   default=5000)
     parser.add_argument('--learning_rate',     type=float, default=0.005)
     parser.add_argument('--num_leaves',        type=int,   default=63)
     parser.add_argument('--min_data_in_leaf',  type=int,   default=20)

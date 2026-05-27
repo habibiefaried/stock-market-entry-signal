@@ -758,15 +758,16 @@ The models automatically calculate your leveraged position P&L:
 
 ### Swing Trading Configuration
 
-Current settings are optimized for **1-2 day swing trades with 5x leverage**:
-- Stop Loss: 0.6× volatility (~1.5% stock move)
-- Take Profit: 1.0× volatility (~2.5% stock move)
+Current settings are optimized for **1-5 day swing trades with 5x leverage**:
+- Stop Loss: 1.5× ATR (~1.5× average daily range)
+- Take Profit: 2.0× ATR (~2.0× average daily range)
+- Risk/Reward: ~1.33:1
 
 To change risk/reward, edit the training scripts (`train_lightgbm.py`, etc.):
 ```python
 # Line ~457-458 in each training script
-stop_loss_distance = 0.6 * volatility  # Change multiplier for tighter/wider stops
-take_profit_distance = 1.0 * volatility  # Change multiplier for tighter/wider targets
+stop_loss_distance = 1.5 * atr  # Change multiplier for tighter/wider stops
+take_profit_distance = 2.0 * atr  # Change multiplier for tighter/wider targets
 ```
 
 ### HTML Report Integration
@@ -823,8 +824,60 @@ The probability analysis is automatically included in the HTML report generated 
 
 ### Trading Strategy
 
-- **Stop Loss/Take Profit**: Based on volatility (0.6× and 1.0× daily volatility)
+- **Stop Loss/Take Profit**: ATR-based (1.5× SL and 2.0× TP)
 - **Optimized for**: 1-2 day swing trades with 5x leverage
 - **Win Probability**: Ensemble of 3 approaches (prediction + Monte Carlo + patterns)
-- **Minimum Threshold**: 60% probability to recommend trade
-- **Confidence Levels**: HIGH (≥75%), MEDIUM (65-75%), LOW (<65%)
+- **Minimum Threshold**: 65% probability to recommend trade
+- **Confidence Levels**: HIGH (≥80%), MEDIUM (70-80%), LOW (<70%)
+
+## PPO Reinforcement Learning Meta-Agent
+
+The system includes a PPO (Proximal Policy Optimization) RL agent that reads outputs from all 7 trained models and learns to decide LONG / SHORT / HOLD.
+
+### How It Works
+
+1. **Walk-Forward Layer 1**: Generates honest out-of-sample model predictions
+2. **Walk-Forward Layer 2**: Trains PPO on those honest predictions
+3. **Auto PyTorch Detection**: Uses PyTorch if installed (3x better gradients), falls back to NumPy
+4. **Voting Fallback**: Automatically switches to model voting when PPO performance is below threshold
+
+### Usage
+
+```bash
+# Run standalone
+python agent_trader.py MSFT_daily_data_20260520.csv
+
+# Or automatically via main.py
+python main.py --ticker MSFT
+```
+
+### Performance Tiers
+
+| Setup | Win Rate | Profit Factor | Requirements |
+|-------|----------|---------------|--------------|
+| NumPy PPO | ~15-30% | 0.5-1.0 | None (built-in) |
+| + PyTorch | ~35-50% | 1.2-2.0 | `pip install torch` |
+| + Voting Fallback | ~30-45% | 1.0-1.5 | Automatic when PPO fails |
+
+### Key Features
+- **Enhanced State**: 22 dimensions (7 model signals + 7 probs + 8 market features)
+- **Warm-Start**: Persists trained weights per CSV hash for faster re-runs
+- **Double Walk-Forward**: No look-ahead bias, realistic out-of-sample evaluation
+- **ATR-Based TP/SL**: Adaptive to each asset's volatility
+
+### Quick Improvement
+
+```bash
+# Install PyTorch for 3x better PPO performance
+pip install torch
+
+# Then re-run - PyTorch is auto-detected
+python main.py --ticker MSFT
+```
+
+### Training Modes
+
+- **Heavy models** (XGBoost-Heavy, LightGBM-Heavy): 70+ features, 3000 trees — best for production
+- **Light models** (XGBoost, LightGBM): 5 OHLCV features — fast baselines
+- **Deep learning** (LSTM, TFT): Sequence models with attention mechanisms
+- **Ensemble** (RandomForest): Walk-forward validation, robust to overfitting

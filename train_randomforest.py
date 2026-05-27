@@ -177,7 +177,7 @@ def walk_forward_validation(df, features, n_splits=5):
 
     return splits
 
-def train_randomforest_model(csv_file, n_estimators=500, max_depth=15, max_features=30):
+def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_features=30):
     """
     Train Random Forest model with walk-forward validation
 
@@ -407,7 +407,7 @@ def train_randomforest_model(csv_file, n_estimators=500, max_depth=15, max_featu
 
     # Adaptive threshold: 0.3x daily vol (min 0.3%)
     recent_ret_pct = df['Close'].pct_change().tail(20).std() * 100
-    sig_threshold  = max(0.3 * recent_ret_pct, 0.3)
+    sig_threshold  = max(0.5 * recent_ret_pct, 0.5)
 
     if expected_move_pct > sig_threshold:
         signal = "BUY (LONG)"
@@ -423,8 +423,8 @@ def train_randomforest_model(csv_file, n_estimators=500, max_depth=15, max_featu
     h, l, c = df['High'], df['Low'], df['Close']
     tr  = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
     atr = float(tr.ewm(span=14, min_periods=14).mean().iloc[-1])
-    stop_loss_distance   = 1.0 * atr
-    take_profit_distance = 1.5 * atr
+    stop_loss_distance   = 1.5 * atr
+    take_profit_distance = 2.0 * atr
     volatility           = df['Close'].tail(20).pct_change().dropna().std() * today_price
 
     if signal == "BUY (LONG)":
@@ -564,7 +564,7 @@ def train_randomforest_model(csv_file, n_estimators=500, max_depth=15, max_featu
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train Random Forest model with walk-forward validation')
     parser.add_argument('csv_file', type=str, help='Path to CSV file with stock data')
-    parser.add_argument('--n_estimators', type=int, default=500, help='Number of trees (default: 500)')
+    parser.add_argument('--n_estimators', type=int, default=1000, help='Number of trees (default: 1000)')
     parser.add_argument('--max_depth', type=int, default=15, help='Maximum tree depth (default: 15)')
     parser.add_argument('--max_features', type=int, default=30, help='Max features to use (default: 30)')
 

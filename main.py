@@ -19,6 +19,7 @@ import sys
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
+import glob
 import warnings
 import logging
 
@@ -1532,15 +1533,59 @@ Default: 96 months (8 years) of historical data.
     print("\nGenerating comparison report...")
     generate_html_report(results, csv_file, output_file, agent_result=agent_result)
 
+    # Move HTML to REPORT/ folder and clean up intermediate files
+    _cleanup(output_file, csv_file)
+
     print("\n" + "="*60)
     print("ALL DONE!")
     print("="*60)
-    print(f"\nView the report: {output_file}")
-    print("\nGenerated files:")
-    print("  - Plots: *_predictions.png, *_feature_importance.png")
-    print("  - Models: *.pkl, *.keras  (includes best_tft_model.keras)")
-    print("  - Report: " + output_file)
+    report_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'REPORT')
+    print(f"\nView the report: {os.path.join(report_dir, os.path.basename(output_file))}")
     print("\n")
+
+
+def _cleanup(report_file, csv_file):
+    """Move HTML report to REPORT/ folder and delete all intermediate files."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    report_dir = os.path.join(base_dir, 'REPORT')
+    os.makedirs(report_dir, exist_ok=True)
+
+    # Move HTML report
+    report_name = os.path.basename(report_file)
+    dest = os.path.join(report_dir, report_name)
+    try:
+        if os.path.exists(report_file):
+            if os.path.exists(dest):
+                os.remove(dest)
+            os.rename(report_file, dest)
+            print(f"\nReport saved to: {dest}")
+    except OSError as e:
+        print(f"\nWarning: Could not move report: {e}")
+
+    # Delete intermediate files
+    patterns = [
+        '*.pkl', '*.keras', '*.npz', '*.pt',
+        '*_hash.txt', '*_signal.txt', '*_model_info.txt', '*_features.txt',
+        '*.png',
+    ]
+    deleted = 0
+    for pattern in patterns:
+        for f in glob.glob(os.path.join(base_dir, pattern)):
+            try:
+                os.remove(f)
+                deleted += 1
+            except OSError:
+                pass
+
+    # Delete the CSV data file used for this run
+    if os.path.exists(csv_file):
+        try:
+            os.remove(csv_file)
+            deleted += 1
+        except OSError:
+            pass
+
+    print(f"Cleaned up {deleted} files")
 
 if __name__ == "__main__":
     main()
