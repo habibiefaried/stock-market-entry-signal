@@ -391,7 +391,7 @@ def train_xgboost_model(csv_file, n_estimators=2000, learning_rate=0.01, max_dep
     expected_move = tomorrow_pred - today_price
     expected_move_pct = (expected_move / today_price) * 100
 
-    # Adaptive threshold: 0.3x daily vol (min 0.3%)
+    # Adaptive threshold: 0.5x daily vol (min 0.5%)
     recent_ret_pct = df['Close'].pct_change().tail(20).std() * 100
     sig_threshold  = max(0.5 * recent_ret_pct, 0.5)
 

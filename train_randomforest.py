@@ -195,34 +195,18 @@ def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_feat
     df, feature_cols = load_and_prepare_data(csv_file)
 
     # Create lag features
-    df_lagged, all_features = create_lag_features(df, feature_cols)
-
-    # Limit features if max_features is less than total
-    if max_features and max_features < len(all_features):
-        # Select most correlated features with target
-        correlations = df_lagged[all_features].corrwith(df_lagged['Target']).abs()
-        top_features = correlations.nlargest(max_features).index.tolist()
-        print(f"\nSelecting top {max_features} features by correlation with target")
-        all_features = top_features
-
-    print(f"Using {len(all_features)} features for training")
-
-    # Prepare features and target
-    X = df_lagged[all_features].values
-    y = df_lagged['Target'].values
+    df_lagged, all_features_raw = create_lag_features(df, feature_cols)
+    print(f"Total available features: {len(all_features_raw)}")
 
     print(f"\nData split:")
-    print(f"Total samples: {len(X)}")
-
-    # Initialize scaler
-    scaler = StandardScaler()
+    print(f"Total samples: {len(df_lagged)}")
 
     # Walk-forward validation
     print("\n" + "="*60)
     print("WALK-FORWARD VALIDATION")
     print("="*60)
 
-    splits = walk_forward_validation(df_lagged, all_features, n_splits=5)
+    splits = walk_forward_validation(df_lagged, None, n_splits=5)
 
     all_train_preds = []
     all_train_actuals = []
@@ -231,26 +215,45 @@ def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_feat
     all_train_directions = []
     all_test_directions = []
 
+    # Track feature usage across folds for final model selection
+    fold_feature_votes = {}
+
     for split_idx, (train_idx, test_idx) in enumerate(splits):
         print(f"\nFold {split_idx + 1}/{len(splits)}")
         print(f"Training samples: {len(train_idx)}, Test samples: {len(test_idx)}")
 
-        X_train, X_test = X[train_idx], X[test_idx]
-        y_train, y_test = y[train_idx], y[test_idx]
+        # Per-fold feature selection on TRAINING DATA ONLY (no look-ahead)
+        fold_features = all_features_raw
+        if max_features and max_features < len(all_features_raw):
+            correlations = df_lagged[all_features_raw].iloc[train_idx].corrwith(
+                df_lagged['Target'].iloc[train_idx]).abs()
+            fold_features = correlations.nlargest(max_features).index.tolist()
+            for feat in fold_features:
+                fold_feature_votes[feat] = fold_feature_votes.get(feat, 0) + 1
+            print(f"  Selected {len(fold_features)} features (per-fold, train-only)")
+
+        # Build fold-specific X, y matrices
+        X_fold = df_lagged[fold_features].values
+        y_fold = df_lagged['Target'].values
+        close_col = fold_features.index('Close')
+
+        X_train, X_test = X_fold[train_idx], X_fold[test_idx]
+        y_train, y_test = y_fold[train_idx], y_fold[test_idx]
 
         # Scale features
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
+        scaler_fold = StandardScaler()
+        X_train_scaled = scaler_fold.fit_transform(X_train)
+        X_test_scaled = scaler_fold.transform(X_test)
 
         # Train Random Forest
         model = RandomForestRegressor(
             n_estimators=n_estimators,
             max_depth=max_depth,
-            max_features='sqrt',  # Use sqrt(n_features) for each split
+            max_features='sqrt',
             min_samples_split=5,
             min_samples_leaf=2,
             random_state=42,
-            n_jobs=-1,  # Use all CPU cores
+            n_jobs=-1,
             verbose=0
         )
 
@@ -267,8 +270,8 @@ def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_feat
         all_test_actuals.extend(y_test)
 
         # Direction predictions (up/down)
-        train_prev_prices = X_train[:, all_features.index('Close')]
-        test_prev_prices = X_test[:, all_features.index('Close')]
+        train_prev_prices = X_train[:, close_col]
+        test_prev_prices = X_test[:, close_col]
 
         train_dir_pred = (train_pred > train_prev_prices).astype(int)
         train_dir_actual = (y_train > train_prev_prices).astype(int)
@@ -329,8 +332,23 @@ def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_feat
     print("\n" + "="*60)
 
     # Train final model on all data for production use
-    print("\nTraining final model on all data...")
-    X_all_scaled = scaler.fit_transform(X)
+    # Select final features: those that appeared in >50% of folds, or top by correlation
+    if fold_feature_votes:
+        min_votes = max(1, len(splits) // 2)
+        final_features = [f for f, v in fold_feature_votes.items() if v >= min_votes]
+        if len(final_features) < 5:  # fallback: use all if too few
+            final_features = all_features_raw[:max_features] if max_features else all_features_raw
+        print(f"\nFinal model: {len(final_features)} features (appeared in >= {min_votes} folds)")
+    else:
+        final_features = all_features_raw
+        if max_features and max_features < len(all_features_raw):
+            correlations = df_lagged[all_features_raw].corrwith(df_lagged['Target']).abs()
+            final_features = correlations.nlargest(max_features).index.tolist()
+
+    X_final = df_lagged[final_features].values
+    y_final = df_lagged['Target'].values
+    scaler_final = StandardScaler()
+    X_all_scaled = scaler_final.fit_transform(X_final)
 
     final_model = RandomForestRegressor(
         n_estimators=n_estimators,
@@ -343,11 +361,11 @@ def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_feat
         verbose=0
     )
 
-    final_model.fit(X_all_scaled, y)
+    final_model.fit(X_all_scaled, y_final)
 
     # Feature importance
     feature_importance = pd.DataFrame({
-        'feature': all_features,
+        'feature': final_features,
         'importance': final_model.feature_importances_
     }).sort_values('importance', ascending=False)
 
@@ -397,15 +415,15 @@ def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_feat
     today_price = df_lagged['Close'].iloc[-1]
 
     # Predict tomorrow's price
-    recent_features = df_lagged[all_features].iloc[-1:].values
-    recent_features_scaled = scaler.transform(recent_features)
+    recent_features = df_lagged[final_features].iloc[-1:].values
+    recent_features_scaled = scaler_final.transform(recent_features)
     tomorrow_pred = final_model.predict(recent_features_scaled)[0]
 
     # Calculate expected move
     expected_move = tomorrow_pred - today_price
     expected_move_pct = (expected_move / today_price) * 100
 
-    # Adaptive threshold: 0.3x daily vol (min 0.3%)
+    # Adaptive threshold: 0.5x daily vol (min 0.5%)
     recent_ret_pct = df['Close'].pct_change().tail(20).std() * 100
     sig_threshold  = max(0.5 * recent_ret_pct, 0.5)
 
@@ -465,9 +483,9 @@ def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_feat
     print("\n[1/3] Running multi-day sequential prediction...")
     prediction_result = predict_multi_day_path(
         model=final_model,
-        scaler=scaler,
-        df=df_lagged,  # Use the LAGGED dataframe with engineered features
-        feature_cols=all_features,  # Use ALL engineered features
+        scaler=scaler_final,
+        df=df_lagged,
+        feature_cols=final_features,
         current_price=today_price,
         stop_loss=stop_loss,
         take_profit=take_profit,
@@ -535,10 +553,10 @@ def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_feat
     info_filename = 'randomforest_model_info.txt'
 
     joblib.dump(final_model, model_filename)
-    joblib.dump(scaler, scaler_filename)
+    joblib.dump(scaler_final, scaler_filename)
 
     with open(features_filename, 'w') as f:
-        f.write('\n'.join(all_features))
+        f.write('\n'.join(final_features))
 
     with open(info_filename, 'w') as f:
         f.write(f"Random Forest Model Information\n")
@@ -550,7 +568,7 @@ def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_feat
         f.write(f"  n_estimators: {n_estimators}\n")
         f.write(f"  max_depth: {max_depth}\n")
         f.write(f"  max_features: sqrt\n")
-        f.write(f"  Number of features: {len(all_features)}\n")
+        f.write(f"  Number of features: {len(final_features)}\n")
         f.write(f"\nPerformance:\n")
         f.write(f"  Test MAE: ${test_mae:.2f}\n")
         f.write(f"  Test RMSE: ${test_rmse:.2f}\n")

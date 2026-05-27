@@ -393,7 +393,7 @@ def train_xgboost_heavy_model(
     expected_move     = tomorrow_pred - today_price
     expected_move_pct = (expected_move / today_price) * 100
 
-    # Adaptive threshold: 0.3x daily vol (min 0.3%) so noisy stocks need larger moves
+    # Adaptive threshold: 0.5x daily vol (min 0.5%) so noisy stocks need larger moves
     vol_20d_pct    = df['Volatility_20d'].iloc[-1]   # already in % units
     sig_threshold  = max(0.5 * vol_20d_pct, 0.5)
 

@@ -133,12 +133,12 @@ def run_model(model_name, script_name, csv_file):
                 'error': result.stderr if result.stderr else "Unknown error - check output"
             }
     except subprocess.TimeoutExpired:
-        print(f"[{model_name}] [FAIL] Training timed out (>2 hours)")
+        print(f"[{model_name}] [FAIL] Training timed out (>{timeout//60} minutes)")
         return {
             'name': model_name,
             'success': False,
             'output': None,
-            'error': "Training timed out after 10 minutes"
+            'error': f"Training timed out after {timeout//60} minutes"
         }
     except Exception as e:
         print(f"[{model_name}] [FAIL] Error: {e}")
@@ -1435,7 +1435,7 @@ This will:
   4. Generate plots for each model
   5. Create a comprehensive HTML report: RESULT-{TICKER}-{DATE}.html
 
-Default: 96 months (8 years) of historical data.
+Default: 132 months (11 years) of historical data.
   8 years is the recommended minimum -- it covers at least one full bull/bear/recovery cycle,
   which is critical for the RL agent to learn generalised entry rules rather than
   memorising a single regime.
@@ -1444,7 +1444,7 @@ Default: 96 months (8 years) of historical data.
 
     parser.add_argument('csv_file', type=str, nargs='?', help='Path to CSV file with stock data (optional if --ticker provided)')
     parser.add_argument('--ticker', type=str, help='Stock ticker to fetch (e.g., MSFT, BTC-USD)')
-    parser.add_argument('--months', type=int, default=96, help='Months of historical data (default: 96 = 8 years)')
+    parser.add_argument('--months', type=int, default=132, help='Months of historical data (default: 132 = 11 years)')
 
     args = parser.parse_args()
 

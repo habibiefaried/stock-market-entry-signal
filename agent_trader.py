@@ -20,6 +20,7 @@ import os
 import sys
 import warnings
 import logging
+import re
 import numpy as np
 import pandas as pd
 import joblib
@@ -233,7 +234,10 @@ def load_model_predictions(csv_file):
                 sig_data = {}
                 with open(sig_path) as fh:
                     for line in fh:
-                        k, v = line.strip().split(':', 1)
+                        line = line.strip()
+                        if not line or ':' not in line:
+                            continue
+                        k, v = line.split(':', 1)
                         sig_data[k.strip()] = v.strip()
                 neural_signals[nn_name] = {
                     'signal':       int(float(sig_data.get('signal', 0))),
@@ -323,44 +327,105 @@ def load_model_predictions(csv_file):
                 row[f'{name}_signal'] = 0
                 row[f'{name}_prob']   = 0.5
 
-        # Inject LSTM / TFT signals (same value every row -- they produce one signal per run)
-        for nn_name, nn_data in neural_signals.items():
-            row[f'{nn_name}_signal'] = nn_data['signal']
-            # Use per-trade ensemble_prob if available, else fall back to directional prob
-            row[f'{nn_name}_prob']   = nn_data['ensemble_prob'] if nn_data['ensemble_prob'] > 0.0 else nn_data['prob']
+        # LSTM / TFT produce one prediction per run (not per row).
+        # Set neutral for historical rows; only the last row gets the real signal.
         for nn_name in ['lstm', 'tft']:
-            if f'{nn_name}_signal' not in row:
-                row[f'{nn_name}_signal'] = 0
-                row[f'{nn_name}_prob']   = 0.5
+            row[f'{nn_name}_signal'] = 0
+            row[f'{nn_name}_prob']   = 0.5
 
         records.append(row)
+
+    # Inject LSTM / TFT signals into the LAST row only (the current day).
+    if records:
+        last = records[-1]
+        for nn_name, nn_data in neural_signals.items():
+            last[f'{nn_name}_signal'] = nn_data['signal']
+            last[f'{nn_name}_prob']   = nn_data['ensemble_prob'] if nn_data.get('ensemble_prob', 0) > 0 else nn_data.get('prob', 0.5)
 
     print(f"  Generated {len(records)} walk-forward rows from {len(loaded_models)} models")
     return pd.DataFrame(records).reset_index(drop=True)
 
 
 def _build_feature_row(df, idx, feats):
-    """Build a single-row feature matrix for a given day index."""
+    """
+    Build a single-row feature matrix for a given day index.
+
+    Derived features (lag, price_change, volatility, MA) are computed from raw
+    OHLCV data on-the-fly, matching the exact formulas used during model training.
+    Complex indicators (RSI, MACD, BB, etc.) are read from pre-computed df columns.
+
+    This eliminates the feature-scale mismatch between agent_trader's
+    compute_indicators() output and the training scripts' own feature engineering.
+    """
     try:
-        # We need to recompute features for the slice up to idx
-        # Use a lazy approach: try to use the columns already in df
+        close = df['Close']
+        volume = df.get('Volume', None)
         row_data = {}
+
         for f in feats:
-            if f in df.columns:
-                val = df[f].iloc[idx]
-                row_data[f] = [val if not pd.isna(val) else 0.0]
-            else:
-                # Derived lag features
-                if '_lag_' in f:
-                    base, lag_str = f.rsplit('_lag_', 1)
-                    lag = int(lag_str)
-                    lag_idx = idx - lag
-                    if lag_idx >= 0 and base in df.columns:
-                        row_data[f] = [df[base].iloc[lag_idx]]
+            # ---- Lag features: Close_lag_X, Volume_lag_X ----
+            if '_lag_' in f:
+                base, lag_str = f.rsplit('_lag_', 1)
+                lag = int(lag_str)
+                lag_idx = idx - lag
+                if lag_idx >= 0:
+                    if base == 'Close':
+                        row_data[f] = [float(close.iloc[lag_idx])]
+                    elif base == 'Volume' and volume is not None:
+                        row_data[f] = [float(volume.iloc[lag_idx])]
                     else:
                         row_data[f] = [0.0]
                 else:
                     row_data[f] = [0.0]
+                continue
+
+            # ---- Price change: Price_change_Xd (raw ratio, as training scripts use) ----
+            m = re.match(r'Price_change_(\d+)d', f)
+            if m:
+                period = int(m.group(1))
+                if idx >= period:
+                    row_data[f] = [float(close.pct_change(period).iloc[idx])]
+                else:
+                    row_data[f] = [0.0]
+                continue
+
+            # ---- Volatility: Volatility_Xd (dollar std for light models, matches training) ----
+            m = re.match(r'Volatility_(\d+)d', f)
+            if m:
+                period = int(m.group(1))
+                if idx >= period:
+                    row_data[f] = [float(close.rolling(period).std().iloc[idx])]
+                else:
+                    row_data[f] = [0.0]
+                continue
+
+            # ---- Moving averages: MA_X, SMA_X ----
+            m = re.match(r'(?:MA|SMA)_(\d+)', f)
+            if m:
+                period = int(m.group(1))
+                if idx >= period:
+                    row_data[f] = [float(close.rolling(period).mean().iloc[idx])]
+                else:
+                    row_data[f] = [0.0]
+                continue
+
+            # ---- EMA ----
+            m = re.match(r'EMA_(\d+)', f)
+            if m:
+                period = int(m.group(1))
+                if idx >= period:
+                    row_data[f] = [float(close.ewm(span=period, min_periods=period).mean().iloc[idx])]
+                else:
+                    row_data[f] = [0.0]
+                continue
+
+            # ---- Fallback: pre-computed indicator from df (RSI, MACD, BB, ATR, etc.) ----
+            if f in df.columns:
+                val = df[f].iloc[idx]
+                row_data[f] = [float(val) if not pd.isna(val) else 0.0]
+            else:
+                row_data[f] = [0.0]
+
         return pd.DataFrame(row_data)[feats]
     except Exception:
         return None
@@ -435,7 +500,7 @@ MODEL_NAMES = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy', 'random
 
 def build_state(row):
     """
-    Enhanced state vector (28 dims):
+    Enhanced state vector (29 dims):
       7 model signals    (encoded: LONG=1, SHORT=-1, HOLD=0)
       7 model probs      (0..1, uses per-trade ensemble prob where available)
       RSI_14 normalised  (-1..1 mapped from 0..100)
@@ -822,15 +887,13 @@ class TradingEnv:
         elif action == ACTION_SHORT and consensus == -1:
             reward += REWARD_CORRECT_DIR
 
-        # Counter-regime penalty: force HOLD on trades against the prevailing trend.
-        # The agent learns that counter-regime actions are worse than just holding.
+        # Soft counter-regime nudge (does NOT overwrite the real trade outcome).
+        # The hard HOLD override is applied during inference only (backtest / get_current_action).
         regime = float(row.get('regime', 0))
         counter_regime = (action == ACTION_LONG and regime < -0.5) or \
                          (action == ACTION_SHORT and regime > 0.5)
         if counter_regime:
-            reward  = REWARD_HOLD * MAX_DAYS - 0.3  # worse than a clean HOLD
-            outcome = 'HOLD'
-            done    = True
+            reward -= 0.3   # small nudge: prefer regime-aligned trades
 
         info = {'outcome': outcome, 'entry': entry, 'sl': sl_price, 'tp': tp_price,
                 'days': min(days_out, MAX_DAYS)}
@@ -1137,9 +1200,9 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False):
     elif action == ACTION_SHORT:
         sl = close + sl_dist
         tp = close - tp_dist
-    else:
-        sl = close - sl_dist
-        tp = close + tp_dist
+    else:  # HOLD — no trade, SL/TP unused
+        sl = close
+        tp = close
 
     return {
         'action':      ACTIONS[action],
