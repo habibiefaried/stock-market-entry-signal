@@ -146,7 +146,7 @@ def run_adaboost(csv_file, n_estimators=500, learning_rate=0.05, max_depth=3):
         raise ValueError("CSV missing OHLCV columns")
 
     df = compute_indicators(df)
-    df['Target'] = df['Close'].shift(-1)
+    df['Target'] = df['Close'].pct_change(3).shift(-3) * 100  # 3-day forward return
     df = df.dropna().reset_index(drop=True)
 
     print(f"Records: {len(df)}  Features: {len(FEATURES)}")
@@ -255,30 +255,26 @@ def run_adaboost(csv_file, n_estimators=500, learning_rate=0.05, max_depth=3):
     today_price = float(df['Close'].iloc[-1])
     recent = df[FEATURES].iloc[-1:].values
     recent_scaled = scaler.transform(recent)
-    tomorrow_pred = model.predict(recent_scaled)[0]
+    tomorrow_return = model.predict(recent_scaled)[0]
+    expected_move_pct = tomorrow_return  # already a percentage
+    tomorrow_pred_price = today_price * (1 + tomorrow_return / 100)
+    expected_move = tomorrow_pred_price - today_price
 
-    expected_move = tomorrow_pred - today_price
-    expected_move_pct = (expected_move / today_price) * 100
-
-    vol_20d_pct = df['Volatility_20d'].iloc[-1]
-    sig_threshold = max(0.5 * vol_20d_pct, 0.5)
+    vol_20d_pct = float(df['Close'].pct_change().tail(20).std() * 100)
+    sig_threshold = max(0.15 * vol_20d_pct, 0.1)
 
     if expected_move_pct > sig_threshold:
-        signal = "BUY (LONG)"
-        signal_int = 1
+        signal = "BUY (LONG)"; signal_int = 1
     elif expected_move_pct < -sig_threshold:
-        signal = "SHORT (SELL)"
-        signal_int = -1
+        signal = "SHORT (SELL)"; signal_int = -1
     else:
-        signal = "HOLD (No clear signal)"
-        signal_int = 0
+        signal = "HOLD (No clear signal)"; signal_int = 0
 
-    atr_val = float(df['ATR_14'].iloc[-1])
-    if pd.isna(atr_val) or atr_val <= 0:
-        atr_val = today_price * 0.02
-
-    sl_dist = 1.5 * atr_val
-    tp_dist = 2.0 * atr_val
+    h, l, c_raw = df['High'], df['Low'], df['Close']
+    tr = pd.concat([h - l, (h - c_raw.shift()).abs(), (l - c_raw.shift()).abs()], axis=1).max(axis=1)
+    atr_val = float(tr.ewm(span=14, min_periods=14).mean().iloc[-1])
+    if pd.isna(atr_val) or atr_val <= 0: atr_val = today_price * 0.02
+    sl_dist = 1.5 * atr_val; tp_dist = 2.05 * atr_val
     volatility = float(df['Close'].tail(20).pct_change().dropna().std() * today_price)
 
     if signal_int == 1:
@@ -296,7 +292,7 @@ def run_adaboost(csv_file, n_estimators=500, learning_rate=0.05, max_depth=3):
 
     print(f"\n{emoji} SIGNAL: {signal}")
     print(f"\nCurrent Price (Today):      ${today_price:.2f}")
-    print(f"Predicted Price (Tomorrow): ${tomorrow_pred:.2f}")
+    print(f"Predicted Price (3-Day): ${tomorrow_pred_price:.2f}")
     print(f"Expected Move:              ${expected_move:+.2f} ({expected_move_pct:+.2f}%)")
     print(f"\nRisk Management (Stock Price Levels):")
     print(f"  Stop Loss:    ${stop_loss:.2f} ({((stop_loss - today_price) / today_price * 100):+.2f}%)")

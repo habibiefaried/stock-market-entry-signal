@@ -233,3 +233,4 @@ train_arima.py
 *.npz
 *.pt
 catboost_info/
+!target_stock.txt

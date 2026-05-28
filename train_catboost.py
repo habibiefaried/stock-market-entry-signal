@@ -137,7 +137,7 @@ def create_lag_features(df, feature_cols):
         df_lagged[f'Close_lag_{lag}'] = df['Close'].shift(lag)
     for lag in [1, 5]:
         df_lagged[f'Volume_lag_{lag}'] = df['Volume'].shift(lag)
-    df_lagged['Target'] = df['Close'].shift(-1)
+    df_lagged['Target'] = df['Close'].pct_change(3).shift(-3) * 100  # 3-day forward return
     df_lagged = df_lagged.dropna().reset_index(drop=True)
     all_features = [c for c in df_lagged.columns
                     if c not in ['Date', 'Target']]
@@ -285,30 +285,26 @@ def run_catboost(csv_file, n_estimators=2000, learning_rate=0.01, max_depth=6):
     today_price = float(df['Close'].iloc[-1])
     recent = df_lagged[all_features].iloc[-1:].values
     recent_scaled = scaler.transform(recent)
-    tomorrow_pred = model.predict(recent_scaled)[0]
+    tomorrow_return = model.predict(recent_scaled)[0]
+    expected_move_pct = tomorrow_return  # already a percentage
+    tomorrow_pred_price = today_price * (1 + tomorrow_return / 100)
+    expected_move = tomorrow_pred_price - today_price
 
-    expected_move = tomorrow_pred - today_price
-    expected_move_pct = (expected_move / today_price) * 100
-
-    vol_20d_pct = df['Volatility_20d'].iloc[-1]
-    sig_threshold = max(0.5 * vol_20d_pct, 0.5)
+    vol_20d_pct = float(df['Close'].pct_change().tail(20).std() * 100)
+    sig_threshold = max(0.15 * vol_20d_pct, 0.1)
 
     if expected_move_pct > sig_threshold:
-        signal = "BUY (LONG)"
-        signal_int = 1
+        signal = "BUY (LONG)"; signal_int = 1
     elif expected_move_pct < -sig_threshold:
-        signal = "SHORT (SELL)"
-        signal_int = -1
+        signal = "SHORT (SELL)"; signal_int = -1
     else:
-        signal = "HOLD (No clear signal)"
-        signal_int = 0
+        signal = "HOLD (No clear signal)"; signal_int = 0
 
-    atr_val = float(df['ATR_14'].iloc[-1])
-    if pd.isna(atr_val) or atr_val <= 0:
-        atr_val = today_price * 0.02
-
-    sl_dist = 1.5 * atr_val
-    tp_dist = 2.0 * atr_val
+    h, l, c_raw = df['High'], df['Low'], df['Close']
+    tr = pd.concat([h - l, (h - c_raw.shift()).abs(), (l - c_raw.shift()).abs()], axis=1).max(axis=1)
+    atr_val = float(tr.ewm(span=14, min_periods=14).mean().iloc[-1])
+    if pd.isna(atr_val) or atr_val <= 0: atr_val = today_price * 0.02
+    sl_dist = 1.5 * atr_val; tp_dist = 2.05 * atr_val
     volatility = float(df['Close'].tail(20).pct_change().dropna().std() * today_price)
 
     if signal_int == 1:
@@ -326,7 +322,7 @@ def run_catboost(csv_file, n_estimators=2000, learning_rate=0.01, max_depth=6):
     emoji = "[BUY]" if signal_int == 1 else ("[SHORT]" if signal_int == -1 else "[HOLD]")
     print(f"\n{emoji} SIGNAL: {signal}")
     print(f"\nCurrent Price (Today):      ${today_price:.2f}")
-    print(f"Predicted Price (Tomorrow): ${tomorrow_pred:.2f}")
+    print(f"Predicted Price (3-Day): ${tomorrow_pred_price:.2f}")
     print(f"Expected Move:              ${expected_move:+.2f} ({expected_move_pct:+.2f}%)")
     print(f"\nRisk Management (Stock Price Levels):")
     print(f"  Stop Loss:    ${stop_loss:.2f} ({((stop_loss - today_price) / today_price * 100):+.2f}%)")
