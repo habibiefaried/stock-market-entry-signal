@@ -466,7 +466,7 @@ def train_lightgbm_model(csv_file, n_estimators=2000, learning_rate=0.01, num_le
     tr  = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
     atr = float(tr.ewm(span=14, min_periods=14).mean().iloc[-1])
     stop_loss_distance   = 1.5 * atr
-    take_profit_distance = 2.0 * atr
+    take_profit_distance = 2.1 * atr
     volatility           = df['Close'].tail(20).pct_change().dropna().std() * today_price
 
     if signal == "BUY (LONG)":

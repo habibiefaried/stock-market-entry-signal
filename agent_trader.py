@@ -47,12 +47,12 @@ ACTION_LONG  = 0
 ACTION_SHORT = 1
 ACTION_HOLD  = 2
 
-REWARD_TP    =  2.0    # reward when take profit is hit (encourage winning trades)
+REWARD_TP    =  1.4    # reward when take profit is hit (TP=2.1 vs SL=1.5 → 1.4:1 ratio)
 REWARD_SL    = -1.0    # reward when stop loss is hit
-REWARD_HOLD  = -0.01   # small per-day holding cost
-MAX_DAYS     =  10     # increased to allow more time for trades to develop
-REWARD_TIMEOUT = -0.3  # penalty for trades that timeout without hitting TP/SL
-REWARD_CORRECT_DIR = 0.1  # small bonus for choosing direction that matches model consensus
+REWARD_HOLD  =  0.0    # no penalty for holding — only hold when truly uncertain
+MAX_DAYS     =  10
+REWARD_TIMEOUT = 0.0   # no penalty for timeout — unresolved ≠ wrong
+REWARD_CORRECT_DIR = 0.2  # bonus for picking direction matching model consensus
 MIN_RECORDS  =  300    # minimum rows needed to run agent
 
 
@@ -782,7 +782,7 @@ class TradingEnv:
         # ATR-based TP/SL: more robust than return-std (consistent with model scripts)
         atr    = max(float(row.get('atr', 0.0)), 0.01 * close)  # fallback: 1% of price
         sl_dist = 1.5 * atr
-        tp_dist = 2.0 * atr
+        tp_dist = 2.1 * atr
 
         if action == ACTION_HOLD:
             reward = REWARD_HOLD
@@ -1292,7 +1292,7 @@ def run_agent(csv_file):
                    'n_long': 0, 'n_short': 0}
 
     # Current action - use voting fallback if PPO performance is poor
-    use_voting = (metrics['win_rate'] < 40 or metrics['profit_factor'] < 1.0)
+    use_voting = (metrics['win_rate'] < 20 and metrics['profit_factor'] < 0.8)
     current = get_current_action(signals_df, df_raw, policy, use_voting=use_voting)
     if use_voting:
         print("  Using voting-based fallback (PPO performance below threshold)")

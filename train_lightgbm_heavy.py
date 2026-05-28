@@ -423,7 +423,7 @@ def train_lightgbm_heavy_model(
 
     atr = float(df['ATR_14'].iloc[-1])
     stop_loss_distance   = 1.5 * atr
-    take_profit_distance = 2.0 * atr
+    take_profit_distance = 2.1 * atr
     volatility           = df[['Close']].tail(20)['Close'].pct_change().dropna().std() * today_price
 
     if signal == "BUY (LONG)":
