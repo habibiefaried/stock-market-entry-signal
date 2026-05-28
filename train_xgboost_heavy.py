@@ -217,7 +217,7 @@ def create_rich_features(df, lags=[1, 3, 5]):
     out['BB_squeeze']     = out['BB_width'] / (bb_width_ma + 1e-10)
 
     # Target
-    out['Target'] = out['Close'].shift(-1)
+    out['Target'] = out['Close'].pct_change().shift(-1) * 100
     out = out.dropna()
 
     all_features = [c for c in out.columns if c not in ['Date', 'Target']]
@@ -323,13 +323,32 @@ def train_xgboost_heavy_model(
     y_train_pred = model.predict(X_train_scaled)
     y_test_pred  = model.predict(X_test_scaled)
 
-    train_mae  = mean_absolute_error(y_train, y_train_pred)
-    train_rmse = np.sqrt(mean_squared_error(y_train, y_train_pred))
-    test_mae   = mean_absolute_error(y_test, y_test_pred)
-    test_rmse  = np.sqrt(mean_squared_error(y_test, y_test_pred))
+    # Convert returns to prices for metrics
+    close_idx = INDICATOR_COLS.index('Close')
+    prev_train = X_train[:, close_idx]
+    prev_test  = X_test[:, close_idx]
+    y_train_price = prev_train * (1 + y_train / 100)
+    y_test_price  = prev_test  * (1 + y_test  / 100)
+    y_train_pred_price = prev_train * (1 + y_train_pred / 100)
+    y_test_pred_price  = prev_test  * (1 + y_test_pred  / 100)
 
-    train_acc, train_prec, train_rec, train_f1 = calculate_direction_metrics(y_train, y_train_pred)
-    test_acc,  test_prec,  test_rec,  test_f1  = calculate_direction_metrics(y_test, y_test_pred)
+    train_mae  = mean_absolute_error(y_train_price, y_train_pred_price)
+    train_rmse = np.sqrt(mean_squared_error(y_train_price, y_train_pred_price))
+    test_mae   = mean_absolute_error(y_test_price, y_test_pred_price)
+    test_rmse  = np.sqrt(mean_squared_error(y_test_price, y_test_pred_price))
+
+    train_dir_actual = (y_train > 0).astype(int)
+    train_dir_pred   = (y_train_pred > 0).astype(int)
+    test_dir_actual  = (y_test > 0).astype(int)
+    test_dir_pred    = (y_test_pred > 0).astype(int)
+    train_acc  = accuracy_score(train_dir_actual, train_dir_pred)
+    train_prec = precision_score(train_dir_actual, train_dir_pred, zero_division=0)
+    train_rec  = recall_score(train_dir_actual, train_dir_pred, zero_division=0)
+    train_f1   = f1_score(train_dir_actual, train_dir_pred, zero_division=0)
+    test_acc  = accuracy_score(test_dir_actual, test_dir_pred)
+    test_prec = precision_score(test_dir_actual, test_dir_pred, zero_division=0)
+    test_rec  = recall_score(test_dir_actual, test_dir_pred, zero_division=0)
+    test_f1   = f1_score(test_dir_actual, test_dir_pred, zero_division=0)
 
     print("\n" + "="*60)
     print("XGBOOST-HEAVY MODEL EVALUATION RESULTS")
@@ -372,8 +391,8 @@ def train_xgboost_heavy_model(
 
     plt.figure(figsize=(15, 6))
     test_dates = test_df['Date'].values
-    plt.plot(test_dates, y_test,      label='Actual Price',    color='blue', linewidth=2)
-    plt.plot(test_dates, y_test_pred, label='Predicted Price', color='red',  linewidth=2, alpha=0.7)
+    plt.plot(test_dates, y_test_price,      label='Actual Price',    color='blue', linewidth=2)
+    plt.plot(test_dates, y_test_pred_price, label='Predicted Price', color='red',  linewidth=2, alpha=0.7)
     plt.title('XGBoost-Heavy: Actual vs Predicted Prices (Test Set)')
     plt.xlabel('Date'); plt.ylabel('Price')
     plt.legend(); plt.xticks(rotation=45); plt.grid(True); plt.tight_layout()
@@ -388,14 +407,14 @@ def train_xgboost_heavy_model(
     today_price          = df['Close'].iloc[-1]
     recent_features      = df_feat[all_features].iloc[-1:].values
     recent_scaled        = scaler.transform(recent_features)
-    tomorrow_pred        = model.predict(recent_scaled)[0]
-
-    expected_move     = tomorrow_pred - today_price
-    expected_move_pct = (expected_move / today_price) * 100
+    tomorrow_return      = model.predict(recent_scaled)[0]
+    expected_move_pct    = tomorrow_return
+    tomorrow_pred_price  = today_price * (1 + tomorrow_return / 100)
+    expected_move        = tomorrow_pred_price - today_price
 
     # Adaptive threshold: 0.5x daily vol (min 0.5%) so noisy stocks need larger moves
     vol_20d_pct    = df['Volatility_20d'].iloc[-1]   # already in % units
-    sig_threshold  = max(0.5 * vol_20d_pct, 0.5)
+    sig_threshold  = max(0.15 * vol_20d_pct, 0.1)
 
     if expected_move_pct > sig_threshold:
         signal       = "BUY (LONG)"
@@ -427,7 +446,7 @@ def train_xgboost_heavy_model(
 
     print(f"\n{signal_emoji} SIGNAL: {signal}")
     print(f"\nCurrent Price (Today):      ${today_price:.2f}")
-    print(f"Predicted Price (Tomorrow): ${tomorrow_pred:.2f}")
+    print(f"Predicted Price (Tomorrow): ${tomorrow_pred_price:.2f}")
     print(f"Expected Move:              ${expected_move:+.2f} ({expected_move_pct:+.2f}%)")
     print(f"\nRisk Management (Stock Price Levels):")
     print(f"  Stop Loss:    ${stop_loss:.2f} ({((stop_loss - today_price) / today_price * 100):+.2f}%)")

@@ -222,33 +222,9 @@ def load_model_predictions(csv_file):
         'xgboost_heavy':  ('xgboost_heavy_model.pkl',  'xgboost_heavy_scaler.pkl',  'xgboost_heavy_features.txt'),
         'lightgbm':       ('lightgbm_model.pkl',        'lightgbm_scaler.pkl',       'lightgbm_features.txt'),
         'lightgbm_heavy': ('lightgbm_heavy_model.pkl', 'lightgbm_heavy_scaler.pkl', 'lightgbm_heavy_features.txt'),
-        'randomforest':   ('randomforest_model.pkl',   'randomforest_scaler.pkl',   'randomforest_features.txt'),
+        'randomforest':        ('randomforest_model.pkl',        'randomforest_scaler.pkl',        'randomforest_features.txt'),
+        'randomforest_heavy':  ('randomforest_heavy_model.pkl',  'randomforest_heavy_scaler.pkl',  'randomforest_heavy_features.txt'),
     }
-
-    # Load statistical ensemble signal from saved file (written after training)
-    statistical_signal = None
-    sig_path = os.path.join(base_dir, 'statistical_signal.txt')
-    if os.path.exists(sig_path):
-        try:
-            sig_data = {}
-            with open(sig_path) as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line or ':' not in line:
-                        continue
-                    k, v = line.split(':', 1)
-                    sig_data[k.strip()] = v.strip()
-            statistical_signal = {
-                'signal':       int(float(sig_data.get('signal', 0))),
-                'prob':         float(sig_data.get('prob', 0.5)),
-                'ensemble_prob': float(sig_data.get('ensemble_prob', 50.0)) / 100.0,
-            }
-            print(f"  Loaded statistical signal: {statistical_signal['signal']} "
-                  f"(prob={statistical_signal['prob']:.2f})")
-        except Exception as e:
-            print(f"  Could not read statistical_signal.txt: {e}")
-    else:
-        print(f"  statistical_signal.txt not found - signal will be neutral")
 
     loaded_models = {}
     for name, (mf, sf, ff) in model_files.items():
@@ -301,13 +277,12 @@ def load_model_predictions(csv_file):
                     continue
                 X    = scl.transform(feat_df)
                 pred = mdl.predict(X)[0]
-                cur  = df_raw['Close'].iloc[i]
-                move = (pred - cur) / (cur + 1e-10) * 100
+                move = pred  # model now predicts % return directly
 
-                if move > 0.5:
+                if move > 0.1:
                     sig  = 1
-                    prob = min(0.5 + abs(move) / 10, 0.95)
-                elif move < -0.5:
+                    prob = min(0.5 + abs(move) / 5, 0.95)
+                elif move < -0.1:
                     sig  = -1
                     prob = min(0.5 + abs(move) / 10, 0.95)
                 else:
@@ -326,20 +301,7 @@ def load_model_predictions(csv_file):
                 row[f'{name}_signal'] = 0
                 row[f'{name}_prob']   = 0.5
 
-        # Statistical ensemble produces one prediction per run (not per row).
-        # Set neutral for historical rows; only the last row gets the real signal.
-        row['statistical_signal'] = 0
-        row['statistical_prob']   = 0.5
-
         records.append(row)
-
-    # Inject statistical signal into the LAST row only (the current day).
-    if records and statistical_signal:
-        last = records[-1]
-        last['statistical_signal'] = statistical_signal['signal']
-        last['statistical_prob']   = (statistical_signal['ensemble_prob']
-                                      if statistical_signal.get('ensemble_prob', 0) > 0
-                                      else statistical_signal.get('prob', 0.5))
 
     print(f"  Generated {len(records)} walk-forward rows from {len(loaded_models)} models")
     return pd.DataFrame(records).reset_index(drop=True)
@@ -460,11 +422,11 @@ def _synthetic_signals(df_raw):
             tr * 2 + noise[2],
             (rsi - 50) / 50 * 0.7 + tr + noise[3],
             macd / (abs(macd) + 1e-5) * 0.3 + tr * 0.5 + noise[4],
-            (rsi - 50) / 50 * 0.6 + macd / (abs(macd) + 1e-5) * 0.4 + noise[5],  # statistical proxy
-            tr * 1.2 + (rsi - 50) / 50 * 0.5 + noise[5],                        # statistical proxy
+            tr * 1.5 + (rsi - 50) / 50 * 0.4 + noise[5],
         ]
 
-        names = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy', 'randomforest', 'statistical']
+        names = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy',
+                 'randomforest', 'randomforest_heavy']
         row   = {
             'date':              df_raw['Date'].iloc[i] if 'Date' in df_raw.columns else i,
             'close':             df_raw['Close'].iloc[i],
@@ -494,8 +456,8 @@ def _synthetic_signals(df_raw):
 # STATE BUILDER
 # ---------------------------------------------------------------------------
 
-MODEL_NAMES = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy', 'randomforest',
-               'statistical']
+MODEL_NAMES = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy',
+               'randomforest', 'randomforest_heavy']
 
 def build_state(row):
     """

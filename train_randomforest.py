@@ -119,7 +119,7 @@ def create_lag_features(df, feature_cols, lags=[1, 2, 3, 5, 10]):
 
     # Create target: next day's closing price
     # We predict tomorrow's close based on today's features
-    df_lagged['Target'] = df_lagged['Close'].shift(-1)
+    df_lagged['Target'] = df_lagged['Close'].pct_change().shift(-1) * 100
 
     # Drop rows with NaN (from lag/rolling operations)
     # This is necessary because first N rows don't have enough history
@@ -259,24 +259,28 @@ def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_feat
 
         model.fit(X_train_scaled, y_train)
 
-        # Make predictions
+        # Make predictions (returns in %)
         train_pred = model.predict(X_train_scaled)
         test_pred = model.predict(X_test_scaled)
 
-        # Store predictions
-        all_train_preds.extend(train_pred)
-        all_train_actuals.extend(y_train)
-        all_test_preds.extend(test_pred)
-        all_test_actuals.extend(y_test)
-
-        # Direction predictions (up/down)
+        # Convert returns to prices for storage
         train_prev_prices = X_train[:, close_col]
         test_prev_prices = X_test[:, close_col]
+        train_pred_price = train_prev_prices * (1 + train_pred / 100)
+        test_pred_price  = test_prev_prices  * (1 + test_pred  / 100)
+        y_train_price = train_prev_prices * (1 + y_train / 100)
+        y_test_price  = test_prev_prices  * (1 + y_test  / 100)
 
-        train_dir_pred = (train_pred > train_prev_prices).astype(int)
-        train_dir_actual = (y_train > train_prev_prices).astype(int)
-        test_dir_pred = (test_pred > test_prev_prices).astype(int)
-        test_dir_actual = (y_test > test_prev_prices).astype(int)
+        all_train_preds.extend(train_pred_price)
+        all_train_actuals.extend(y_train_price)
+        all_test_preds.extend(test_pred_price)
+        all_test_actuals.extend(y_test_price)
+
+        # Direction: return > 0 means price went up
+        train_dir_pred   = (train_pred > 0).astype(int)
+        train_dir_actual = (y_train > 0).astype(int)
+        test_dir_pred    = (test_pred > 0).astype(int)
+        test_dir_actual  = (y_test > 0).astype(int)
 
         all_train_directions.extend(zip(train_dir_actual, train_dir_pred))
         all_test_directions.extend(zip(test_dir_actual, test_dir_pred))
@@ -417,15 +421,14 @@ def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_feat
     # Predict tomorrow's price
     recent_features = df_lagged[final_features].iloc[-1:].values
     recent_features_scaled = scaler_final.transform(recent_features)
-    tomorrow_pred = final_model.predict(recent_features_scaled)[0]
-
-    # Calculate expected move
-    expected_move = tomorrow_pred - today_price
-    expected_move_pct = (expected_move / today_price) * 100
+    tomorrow_return = final_model.predict(recent_features_scaled)[0]
+    expected_move_pct = tomorrow_return
+    tomorrow_pred_price = today_price * (1 + tomorrow_return / 100)
+    expected_move = tomorrow_pred_price - today_price
 
     # Adaptive threshold: 0.5x daily vol (min 0.5%)
     recent_ret_pct = df['Close'].pct_change().tail(20).std() * 100
-    sig_threshold  = max(0.5 * recent_ret_pct, 0.5)
+    sig_threshold  = max(0.15 * recent_ret_pct, 0.1)
 
     if expected_move_pct > sig_threshold:
         signal = "BUY (LONG)"
@@ -460,7 +463,7 @@ def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_feat
     # Print trading signal
     print(f"\n{signal_emoji} SIGNAL: {signal}")
     print(f"\nCurrent Price (Today):     ${today_price:.2f}")
-    print(f"Predicted Price (Tomorrow): ${tomorrow_pred:.2f}")
+    print(f"Predicted Price (Tomorrow): ${tomorrow_pred_price:.2f}")
     print(f"Expected Move:             ${expected_move:+.2f} ({expected_move_pct:+.2f}%)")
     print(f"\nRisk Management (Stock Price Levels):")
     print(f"  Stop Loss:     ${stop_loss:.2f} ({((stop_loss - today_price) / today_price * 100):+.2f}%)")

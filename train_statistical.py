@@ -134,36 +134,53 @@ FEATURES = [
 # KNN PREDICTION
 # ---------------------------------------------------------------------------
 
-def knn_predict(df, features, k=50, lookback_ratio=0.7):
+def knn_predict(df, features, k=50, lookback_ratio=0.7, top_n_features=20,
+                calibrate=False):
     """
-    Find k most similar historical days and predict direction by weighted vote.
-
-    Only searches the first `lookback_ratio` fraction of data (training portion)
-    to avoid look-ahead bias. Weights neighbors by inverse distance.
-
-    Returns (signal_int, confidence, expected_move_pct).
+    KNN prediction with feature-weighted distance, temporal decay, dynamic k.
+    Set calibrate=True for the final prediction to get calibrated confidence.
     """
     n = len(df)
-    search_end = int(n * lookback_ratio)  # only search in training portion
-    if search_end < k + 10:
-        search_end = max(k + 10, n // 2)
+    search_end = int(n * lookback_ratio)
+    if search_end < 50:
+        search_end = max(50, n // 2)
 
-    # Scale features
+    k_eff = max(30, min(k, int(np.sqrt(search_end)), search_end - 2))
+
+    # Feature selection + feature weights
+    returns = df['Close'].pct_change().shift(-1) * 100
+    if top_n_features and top_n_features < len(features):
+        corrs = df[features].iloc[:search_end].corrwith(
+            returns.iloc[:search_end]).abs().fillna(0)
+        selected = corrs.nlargest(top_n_features).index.tolist()
+        feature_weights = corrs[selected].values.copy()
+        feature_weights = np.clip(feature_weights, 0.01, None)
+        feature_weights /= feature_weights.sum()
+    else:
+        selected = list(features)
+        feature_weights = np.ones(len(selected)) / len(selected)
+
+    # Scale
     scaler = StandardScaler()
-    X_all = scaler.fit_transform(df[features].values)
+    X_all = scaler.fit_transform(df[selected].values)
 
-    # Current day
-    current = X_all[-1:]
+    # Feature-weighted distance: multiply each dimension by sqrt(weight)
+    # This makes high-correlation features dominate the distance calculation
+    fw = np.sqrt(feature_weights * len(selected))  # scale so avg weight = 1.0
+    X_all_weighted = X_all * fw[np.newaxis, :]
+    current = X_all_weighted[-1:]
+    X_hist = X_all_weighted[:search_end]
 
-    # Historical days (training only)
-    X_hist = X_all[:search_end]
-
-    # Find k nearest neighbors
-    nn = NearestNeighbors(n_neighbors=min(k, search_end - 1), metric='euclidean')
+    nn = NearestNeighbors(n_neighbors=k_eff, metric='euclidean')
     nn.fit(X_hist)
     distances, indices = nn.kneighbors(current)
 
-    # Compute next-day returns for each neighbor
+    # Distance threshold: if closest neighbor is too far (>2.5x median), skip
+    median_dist = np.median(distances[0])
+    if distances[0][0] > median_dist * 2.5 and median_dist > 0:
+        return 0, 50.0, 0.0  # novel regime — don't predict
+
+    # Neighbor aggregation with distance + temporal weighting
     neighbor_returns = []
     neighbor_weights = []
     for dist, idx in zip(distances[0], indices[0]):
@@ -172,37 +189,61 @@ def knn_predict(df, features, k=50, lookback_ratio=0.7):
             cur_close = df['Close'].iloc[idx]
             ret = (next_close - cur_close) / (cur_close + 1e-10) * 100
             neighbor_returns.append(ret)
-            # Weight by inverse distance (closer = more relevant)
-            neighbor_weights.append(1.0 / (dist + 1e-6))
+            dist_w = 1.0 / (dist + 1e-6)
+            recency_bonus = 1.0 + 0.5 * (idx / max(1, search_end))
+            neighbor_weights.append(dist_w * recency_bonus)
 
     if not neighbor_returns:
         return 0, 50.0, 0.0
 
-    # Weighted average return
     weights = np.array(neighbor_weights)
     weights /= weights.sum()
     weighted_return = np.sum(np.array(neighbor_returns) * weights)
 
-    # Direction vote
+    # Direction vote with calibrated confidence
     rets = np.array(neighbor_returns)
-    up_weight = float(np.sum(weights[rets > 0])) if np.any(rets > 0) else 0.0
-    down_weight = float(np.sum(weights[rets <= 0])) if np.any(rets <= 0) else 0.0
-    total_w = up_weight + down_weight + 1e-10
+    up_w = float(np.sum(weights[rets > 0])) if np.any(rets > 0) else 0.0
+    down_w = float(np.sum(weights[rets <= 0])) if np.any(rets <= 0) else 0.0
+    total_w = up_w + down_w + 1e-10
+    vote_margin = abs(up_w - down_w) / total_w
 
-    # Confidence = how decisive the vote is (0% = 50/50 split, 100% = unanimous)
-    vote_margin = abs(up_weight - down_weight) / total_w
-    confidence = 50.0 + vote_margin * 45.0  # range 50-95%
+    signal_int = 1 if up_w > down_w else (-1 if down_w > up_w else 0)
+    expected_move = weighted_return  # raw weighted return — confidence handles uncertainty
 
-    if up_weight > down_weight:
-        signal_int = 1
-        # Scale expected move by vote margin and avg neighbor move magnitude
-        expected_move = weighted_return * vote_margin
-    elif down_weight > up_weight:
-        signal_int = -1
-        expected_move = weighted_return * vote_margin
+    # Calibrated confidence: backtest KNN over recent data for empirical winrate
+    if calibrate:
+        cal_window = min(100, n - search_end - 5, search_end - 20)
+        if cal_window > 20:
+            wins = 0; trials = 0
+            for i in range(n - cal_window - 1, n - 1):
+                sub_end = int(i * lookback_ratio)
+                if sub_end < k_eff + 5:
+                    continue
+                sub_scaler = StandardScaler()
+                X_sub = sub_scaler.fit_transform(df[selected].iloc[:i].values)
+                X_sub_w = X_sub * fw[np.newaxis, :]
+                sub_cur = X_sub_w[-1:]; sub_hist = X_sub_w[:sub_end]
+                sub_nn = NearestNeighbors(n_neighbors=min(k_eff, sub_end-1), metric='euclidean')
+                sub_nn.fit(sub_hist)
+                _, sub_idxs = sub_nn.kneighbors(sub_cur)
+                sub_ups = sum(1 for idx in sub_idxs[0]
+                             if idx + 1 < i and df['Close'].iloc[idx+1] > df['Close'].iloc[idx])
+                sub_downs = len(sub_idxs[0]) - sub_ups
+                if sub_ups == sub_downs: continue
+                pred_dir = 1 if sub_ups > sub_downs else -1
+                if i + 1 < n:
+                    actual_dir = 1 if df['Close'].iloc[i+1] > df['Close'].iloc[i] else -1
+                    trials += 1
+                    if pred_dir == actual_dir: wins += 1
+            if trials > 10:
+                confidence = wins / trials * 60.0 + vote_margin * 40.0
+                confidence = max(40.0, min(confidence, 90.0))
+            else:
+                confidence = 50.0 + vote_margin * 40.0
+        else:
+            confidence = 50.0 + vote_margin * 40.0
     else:
-        signal_int = 0
-        expected_move = 0.0
+        confidence = 50.0 + vote_margin * 40.0
 
     return signal_int, confidence, expected_move
 
@@ -226,7 +267,7 @@ def run_statistical(csv_file, k=50):
     print(f"Records: {len(df)}  Features: {len(FEATURES)}  k={k}")
 
     # KNN prediction
-    signal_int, confidence, expected_move_pct = knn_predict(df, FEATURES, k=k)
+    signal_int, confidence, expected_move_pct = knn_predict(df, FEATURES, k=k, calibrate=True)
     today_price = float(df['Close'].iloc[-1])
 
     if signal_int == 1:
@@ -313,6 +354,58 @@ def run_statistical(csv_file, k=50):
         print(f"ENSEMBLE_PROBABILITY: {ensemble['ensemble_probability']:.1f}%")
         print(f"CONFIDENCE_LEVEL: {ensemble['confidence_level']}")
         print(f"RECOMMENDATION: {ensemble['recommendation']}")
+
+    # --- Plots ---
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    # Walk-back predictions: for last 200 days, predict next-day return using KNN
+    n_plot = min(200, len(df) - 60)
+    actual_returns = []
+    pred_returns = []
+    for i in range(len(df) - n_plot, len(df) - 1):
+        _, _, ret = knn_predict(df.iloc[:i+1], FEATURES, k=k, top_n_features=20)
+        actual = float(df['Close'].pct_change().iloc[i+1] * 100) if i+1 < len(df) else 0
+        pred_returns.append(ret)
+        actual_returns.append(actual)
+
+    plt.figure(figsize=(15, 6))
+    plt.plot(range(n_plot-1), actual_returns, label='Actual Return %', color='blue', linewidth=1.5)
+    plt.plot(range(n_plot-1), pred_returns, label='KNN Predicted Return %', color='red', linewidth=1.5, alpha=0.7)
+    plt.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+    plt.title(f'KNN Statistical: Predicted vs Actual Returns (Last {n_plot} Days, k={k})')
+    plt.xlabel('Days Ago')
+    plt.ylabel('Next-Day Return (%)')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig('statistical_predictions.png', dpi=150, bbox_inches='tight')
+    plt.close()
+
+    # Neighbor distance histogram (for the current prediction)
+    from sklearn.neighbors import NearestNeighbors
+    from sklearn.preprocessing import StandardScaler
+    # Use same feature selection as knn_predict
+    returns = df['Close'].pct_change().shift(-1) * 100
+    corrs = df[FEATURES].corrwith(returns).abs().fillna(0)
+    selected_feats = corrs.nlargest(20).index.tolist()
+    sc = StandardScaler()
+    X_all = sc.fit_transform(df[selected_feats].values)
+    search_end = int(len(df) * 0.7)
+    nn = NearestNeighbors(n_neighbors=min(k, search_end-1), metric='euclidean')
+    nn.fit(X_all[:search_end])
+    dists, _ = nn.kneighbors(X_all[-1:])
+    plt.figure(figsize=(10, 4))
+    plt.bar(range(1, len(dists[0])+1), sorted(dists[0], reverse=True), color='steelblue')
+    plt.title(f'KNN Neighbor Distances (Current Day, k={k})')
+    plt.xlabel('Neighbor Rank (closest first)')
+    plt.ylabel('Euclidean Distance')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig('statistical_feature_importance.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    print("Plots saved: statistical_predictions.png, statistical_feature_importance.png")
 
     # --- Save signal file for RL agent ---
     ensemble_prob = ensemble['ensemble_probability'] if ensemble else 50.0

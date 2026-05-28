@@ -126,9 +126,8 @@ def create_lag_features(df, feature_cols, lags=[1, 2, 3, 5, 10]):
     df_lagged['Volatility_10d'] = df_lagged['Close'].rolling(window=10).std()
 
     # Target: Next day's closing price
-    # shift(-1) moves data UP by 1 row, so current row gets NEXT day's value
-    # This is what we're trying to predict!
-    df_lagged['Target'] = df_lagged['Close'].shift(-1)
+    # Target = tomorrow's % return (better for model learning than absolute price)
+    df_lagged['Target'] = df_lagged['Close'].pct_change().shift(-1) * 100
 
     # Drop rows with NaN (created by shift operations)
     # - First few rows: no data for lag features (Close_lag_10 needs 10 prior days)
@@ -297,20 +296,39 @@ def train_xgboost_model(csv_file, n_estimators=2000, learning_rate=0.01, max_dep
             verbose=50,
         )
 
-    # Make predictions
+    # Make predictions (returns in %)
     print("\nMaking predictions...")
     y_train_pred = model.predict(X_train_scaled)
     y_test_pred = model.predict(X_test_scaled)
 
-    # Calculate regression metrics
-    train_mae = mean_absolute_error(y_train, y_train_pred)
-    train_rmse = np.sqrt(mean_squared_error(y_train, y_train_pred))
-    test_mae = mean_absolute_error(y_test, y_test_pred)
-    test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred))
+    # Convert returns to prices for MAE/RMSE/direction
+    close_idx = all_features.index('Close')
+    prev_train = X_train[:, close_idx]
+    prev_test  = X_test[:, close_idx]
+    y_train_price = prev_train * (1 + y_train / 100)
+    y_test_price  = prev_test  * (1 + y_test  / 100)
+    y_train_pred_price = prev_train * (1 + y_train_pred / 100)
+    y_test_pred_price  = prev_test  * (1 + y_test_pred  / 100)
 
-    # Calculate direction metrics (classification)
-    train_acc, train_prec, train_rec, train_f1 = calculate_direction_metrics(y_train, y_train_pred)
-    test_acc, test_prec, test_rec, test_f1 = calculate_direction_metrics(y_test, y_test_pred)
+    # Calculate regression metrics in dollars
+    train_mae = mean_absolute_error(y_train_price, y_train_pred_price)
+    train_rmse = np.sqrt(mean_squared_error(y_train_price, y_train_pred_price))
+    test_mae = mean_absolute_error(y_test_price, y_test_pred_price)
+    test_rmse = np.sqrt(mean_squared_error(y_test_price, y_test_pred_price))
+
+    # Direction metrics: return > 0 means price went up
+    train_dir_actual = (y_train > 0).astype(int)
+    train_dir_pred   = (y_train_pred > 0).astype(int)
+    test_dir_actual  = (y_test > 0).astype(int)
+    test_dir_pred    = (y_test_pred > 0).astype(int)
+    train_acc  = accuracy_score(train_dir_actual, train_dir_pred)
+    train_prec = precision_score(train_dir_actual, train_dir_pred, zero_division=0)
+    train_rec  = recall_score(train_dir_actual, train_dir_pred, zero_division=0)
+    train_f1   = f1_score(train_dir_actual, train_dir_pred, zero_division=0)
+    test_acc  = accuracy_score(test_dir_actual, test_dir_pred)
+    test_prec = precision_score(test_dir_actual, test_dir_pred, zero_division=0)
+    test_rec  = recall_score(test_dir_actual, test_dir_pred, zero_division=0)
+    test_f1   = f1_score(test_dir_actual, test_dir_pred, zero_division=0)
 
     # Print results
     print("\n" + "="*60)
@@ -359,8 +377,8 @@ def train_xgboost_model(csv_file, n_estimators=2000, learning_rate=0.01, max_dep
     # Plot predictions
     plt.figure(figsize=(15, 6))
     test_dates = test_df['Date'].values
-    plt.plot(test_dates, y_test, label='Actual Price', color='blue', linewidth=2)
-    plt.plot(test_dates, y_test_pred, label='Predicted Price', color='red', linewidth=2, alpha=0.7)
+    plt.plot(test_dates, y_test_price, label='Actual Price', color='blue', linewidth=2)
+    plt.plot(test_dates, y_test_pred_price, label='Predicted Price', color='red', linewidth=2, alpha=0.7)
     plt.title('XGBoost Model: Actual vs Predicted Prices (Test Set)')
     plt.xlabel('Date')
     plt.ylabel('Price')
@@ -384,16 +402,15 @@ def train_xgboost_model(csv_file, n_estimators=2000, learning_rate=0.01, max_dep
     recent_features = df_lagged[all_features].iloc[-1:].values
     recent_features_scaled = scaler.transform(recent_features)
 
-    # Predict tomorrow's price
-    tomorrow_pred = model.predict(recent_features_scaled)[0]
+    # Predict tomorrow's % return
+    tomorrow_return = model.predict(recent_features_scaled)[0]
+    expected_move_pct = tomorrow_return  # already a percentage
+    tomorrow_pred_price = today_price * (1 + tomorrow_return / 100)
+    expected_move = tomorrow_pred_price - today_price
 
-    # Calculate expected move
-    expected_move = tomorrow_pred - today_price
-    expected_move_pct = (expected_move / today_price) * 100
-
-    # Adaptive threshold: 0.5x daily vol (min 0.5%)
+    # Adaptive threshold: 0.15x daily vol (min 0.1%, scaled for return prediction)
     recent_ret_pct = df['Close'].pct_change().tail(20).std() * 100
-    sig_threshold  = max(0.5 * recent_ret_pct, 0.5)
+    sig_threshold  = max(0.15 * recent_ret_pct, 0.1)
 
     if expected_move_pct > sig_threshold:
         signal = "BUY (LONG)"
@@ -428,7 +445,7 @@ def train_xgboost_model(csv_file, n_estimators=2000, learning_rate=0.01, max_dep
     # Print trading signal
     print(f"\n{signal_emoji} SIGNAL: {signal}")
     print(f"\nCurrent Price (Today):     ${today_price:.2f}")
-    print(f"Predicted Price (Tomorrow): ${tomorrow_pred:.2f}")
+    print(f"Predicted Price (Tomorrow): ${tomorrow_pred_price:.2f}")
     print(f"Expected Move:             ${expected_move:+.2f} ({expected_move_pct:+.2f}%)")
     print(f"\nRisk Management (Stock Price Levels):")
     print(f"  Stop Loss:     ${stop_loss:.2f} ({((stop_loss - today_price) / today_price * 100):+.2f}%)")

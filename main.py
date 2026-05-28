@@ -1512,12 +1512,12 @@ Default: 132 months (11 years) of historical data.
 
     # Define models to run
     models = [
-        ('Statistical',    'train_statistical.py'),
-        ('XGBoost',        'train_xgboost.py'),
-        ('XGBoost-Heavy',  'train_xgboost_heavy.py'),
-        ('LightGBM',       'train_lightgbm.py'),
-        ('LightGBM-Heavy', 'train_lightgbm_heavy.py'),
-        ('RandomForest',   'train_randomforest.py'),
+        ('XGBoost',              'train_xgboost.py'),
+        ('XGBoost-Heavy',        'train_xgboost_heavy.py'),
+        ('LightGBM',             'train_lightgbm.py'),
+        ('LightGBM-Heavy',       'train_lightgbm_heavy.py'),
+        ('RandomForest',         'train_randomforest.py'),
+        ('RandomForest-Heavy',   'train_randomforest_heavy.py'),
     ]
 
     # Run all models in parallel using ThreadPoolExecutor
