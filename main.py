@@ -417,7 +417,7 @@ def generate_probability_html(signal):
 
     return '\n'.join(html)
 
-def run_agent(csv_file):
+def run_agent(csv_file, current_price=None):
     """Run the PPO RL meta-agent and return parsed result dict."""
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'agent_trader.py')
     if not os.path.exists(script_path):
@@ -425,8 +425,12 @@ def run_agent(csv_file):
         return None
     print("[RL-Agent] Starting PPO meta-agent...")
     try:
+        cmd = [sys.executable, script_path, csv_file]
+        if current_price is not None:
+            cmd.extend(['--current-price', str(current_price)])
+            print(f"[RL-Agent] Live price override: ${current_price:.2f}")
         result = subprocess.run(
-            [sys.executable, script_path, csv_file],
+            cmd,
             capture_output=True, text=True, timeout=600,
             cwd=os.path.dirname(os.path.abspath(__file__))
         )
@@ -1475,6 +1479,8 @@ Default: 132 months (11 years) of historical data.
     parser.add_argument('csv_file', type=str, nargs='?', help='Path to CSV file with stock data (optional if --ticker provided)')
     parser.add_argument('--ticker', type=str, help='Stock ticker to fetch (e.g., MSFT, BTC-USD)')
     parser.add_argument('--months', type=int, default=84, help='Months of historical data (default: 84 = 7 years)')
+    parser.add_argument('--current-price', type=float, default=None,
+                       help='Live current price for agent decision (overrides CSV last close)')
 
     args = parser.parse_args()
 
@@ -1556,7 +1562,7 @@ Default: 132 months (11 years) of historical data.
     print("\n" + "="*60)
     print("RUNNING RL META-AGENT")
     print("="*60)
-    agent_result = run_agent(csv_file)
+    agent_result = run_agent(csv_file, current_price=args.current_price)
 
     # Generate HTML report
     print("\nGenerating comparison report...")
