@@ -47,10 +47,10 @@ ACTION_LONG  = 0
 ACTION_SHORT = 1
 ACTION_HOLD  = 2
 
-REWARD_TP    =  1.4    # reward when take profit is hit (TP=2.1 vs SL=1.5 → 1.4:1 ratio)
+REWARD_TP    =  1.37   # reward when take profit is hit (TP=2.05 vs SL=1.5 → 1.37:1 ratio)
 REWARD_SL    = -1.0    # reward when stop loss is hit
 REWARD_HOLD  =  0.0    # no penalty for holding — only hold when truly uncertain
-MAX_DAYS     =  10
+MAX_DAYS     =  15     # longer window for 3-day prediction horizon
 REWARD_TIMEOUT = 0.0   # no penalty for timeout — unresolved ≠ wrong
 REWARD_CORRECT_DIR = 0.2  # bonus for picking direction matching model consensus
 MIN_RECORDS  =  300    # minimum rows needed to run agent
@@ -782,7 +782,7 @@ class TradingEnv:
         # ATR-based TP/SL: more robust than return-std (consistent with model scripts)
         atr    = max(float(row.get('atr', 0.0)), 0.01 * close)  # fallback: 1% of price
         sl_dist = 1.5 * atr
-        tp_dist = 2.1 * atr
+        tp_dist = 2.05 * atr
 
         if action == ACTION_HOLD:
             reward = REWARD_HOLD
@@ -1022,6 +1022,14 @@ def backtest(env, policy, n_episodes=None):
         total_r = 0.0
         while not done:
             action, prob, _ = policy.act_greedy(state)
+            # Consensus filter (mirrors get_current_action)
+            row = env.signals_df.iloc[env.ep_idx]
+            signals_raw = [int(row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
+            n_long = signals_raw.count(1); n_short = signals_raw.count(-1)
+            if action == ACTION_LONG and n_long < 3:
+                action = ACTION_HOLD; prob = 0.5
+            elif action == ACTION_SHORT and n_short < 3:
+                action = ACTION_HOLD; prob = 0.5
             state, reward, done, info = env.step(action)
             total_r += reward
         trades.append({
@@ -1095,8 +1103,14 @@ def compute_metrics(trades_df, n_months):
 # FINAL ACTION FOR REPORT
 # ---------------------------------------------------------------------------
 
-def get_current_action(signals_df, df_raw, policy, use_voting=False):
-    """Run greedy policy on the last available row."""
+def get_current_action(signals_df, df_raw, policy, use_voting=False, current_price=None):
+    """
+    Run greedy policy on the last available row.
+
+    If current_price is provided (live trading), it overrides the CSV's last close
+    for entry/TP/SL calculations. Model signals still use the CSV data (yesterday's
+    features), but the trade levels reflect where the market actually is now.
+    """
     last_row   = signals_df.iloc[-1]
     state      = build_state(last_row)
 
@@ -1130,10 +1144,20 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False):
         action, prob, _ = policy.act_greedy(state)
 
     # ATR-based SL/TP (consistent with training environment and model scripts)
-    close   = float(last_row['close'])
+    csv_close = float(last_row['close'])
+    close = float(current_price) if current_price is not None else csv_close
     atr     = max(float(last_row.get('atr', 0.0)), 0.01 * close)
     sl_dist = 1.5 * atr
-    tp_dist = 2.0 * atr
+    tp_dist = 2.05 * atr
+
+    # Consensus filter: trade only when 3+/6 models agree (simple majority)
+    signals_raw = [int(last_row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
+    n_long  = signals_raw.count(1)
+    n_short = signals_raw.count(-1)
+    if action == ACTION_LONG and n_long < 3:
+        action = ACTION_HOLD; prob = 0.5
+    elif action == ACTION_SHORT and n_short < 3:
+        action = ACTION_HOLD; prob = 0.5
 
     if action == ACTION_LONG:
         sl = close - sl_dist
@@ -1141,7 +1165,7 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False):
     elif action == ACTION_SHORT:
         sl = close + sl_dist
         tp = close - tp_dist
-    else:  # HOLD — no trade, SL/TP unused
+    else:  # HOLD — no trade
         sl = close
         tp = close
 
@@ -1160,7 +1184,7 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False):
 # MAIN
 # ---------------------------------------------------------------------------
 
-def run_agent(csv_file):
+def run_agent(csv_file, current_price=None):
     print("="*70)
     print("RL AGENT TRADER - PPO META-AGENT")
     print("="*70)
@@ -1293,7 +1317,8 @@ def run_agent(csv_file):
 
     # Current action - use voting fallback if PPO performance is poor
     use_voting = (metrics['win_rate'] < 20 and metrics['profit_factor'] < 0.8)
-    current = get_current_action(signals_df, df_raw, policy, use_voting=use_voting)
+    current = get_current_action(signals_df, df_raw, policy, use_voting=use_voting,
+                                 current_price=current_price)
     if use_voting:
         print("  Using voting-based fallback (PPO performance below threshold)")
 
@@ -1363,5 +1388,7 @@ if __name__ == "__main__":
         description='PPO RL meta-agent that reads model outputs and decides LONG/SHORT/HOLD'
     )
     parser.add_argument('csv_file', type=str, help='Path to CSV file with stock data')
+    parser.add_argument('--current-price', type=float, default=None,
+                       help='Live current price (overrides last close for entry/TP/SL)')
     args = parser.parse_args()
-    run_agent(args.csv_file)
+    run_agent(args.csv_file, current_price=args.current_price)
