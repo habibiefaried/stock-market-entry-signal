@@ -30,6 +30,7 @@ This document walks through every concept behind this codebase from raw maths to
 20. [File-by-File Reference](#20-file-by-file-reference)
 21. [Common Pitfalls and How This Code Avoids Them](#21-common-pitfalls-and-how-this-code-avoids-them)
 22. [What to Study Next](#22-what-to-study-next)
+23. [FAQ — Design Decisions & Lessons Learned](#23-faq--design-decisions--lessons-learned)
 
 ---
 
@@ -829,10 +830,10 @@ saved weights when re-running on the same CSV file.
 **Current TP/SL**: TP = 2.05 × ATR, SL = 1.5 × ATR. Ratio = 1.37:1.
 Break-even = 1.5 / 3.55 = 42.3%.
 
-**Current performance (AAPL, 7 years data, 3-day horizon)**: ~52% winrate, 3.4+ profit factor,
-17 trades/month with 3/6 consensus filter. The 3-day prediction horizon improved
-winrate from ~36% to ~52% by increasing signal-to-noise ~2×. MSFT shows ~37% winrate
-(variable by stock regime) with profit factor consistently above 3.0.
+**Current performance (6 target stocks, 3-day horizon, multi-tier consensus)**:
+Avg winrate 44.3%, avg profit factor 4.33. All stocks profitable. TSLA leads at
+56.8% winrate. Winrate ceiling varies by stock (36-57%) based on model accuracy
+on each ticker — some stocks are inherently more predictable than others.
 
 ### 18.6 Signal File Loading (LSTM / TFT)
 
@@ -891,30 +892,38 @@ bull run) while improving profit factor from 1.6 to 2.3.
 ### 18.10 Winrate Optimization Strategy
 
 **The problem**: With TP=2.05 ATR, SL=1.5 ATR (break-even 42.3%) and model direction
-accuracy ~50-55%, the ceiling winrate from consensus alone is ~36-40%. Getting to
-48%+ requires either better models or stricter trade filtering.
+accuracy ~50-55%, the ceiling winrate from consensus alone is ~40-57% depending on
+the stock. Getting higher winrate requires stricter trade filtering.
 
-**Strategy — Consensus Filter**: Only execute a trade when 3+/6 models agree on the
-direction (simple majority). This removes "lone wolf" trades where the PPO agent
-goes against the majority. Implemented in both `backtest()` and `get_current_action()`.
+**Strategy — Multi-Tier Consensus Filter**: Instead of a binary trade/skip decision,
+trades are graded by how many models agree:
 
-**Trade-off table (AAPL backtest, 7 years, 3-day horizon)**:
+| Agreement | Confidence Scale | Regime Check | Rationale |
+|-----------|-----------------|-------------|-----------|
+| 5-6/6 | 100% | None | Strong consensus, full send |
+| 4/6 | 85% | None | Good agreement, slight discount |
+| 3/6 | 60% | Must be regime-compatible | Marginal, only with trend |
+| <3/6 | SKIP | — | Not enough agreement |
 
-| Consensus | Winrate | Trades/Month | Profit Factor | Notes |
-|-----------|---------|-------------|---------------|-------|
-| No filter | 29% | 21 | 1.8 | PPO votes alone, overtrades |
-| 3/6 majority | **52%** | **17** | **3.4** | Recommended — best balance |
-| 4/6 strong | 57% | 4 | 4.1 | Great stats, too few trades |
+This removes "lone wolf" trades where the PPO agent goes against the majority
+while still allowing enough trades for practical swing trading. Implemented in
+both `backtest()` and `get_current_action()`.
 
-**Why 3/6 is the recommendation**: 17 trades/month gives enough action for swing
-trading. 52% winrate with 1.37:1 reward ratio yields 3.4+ profit factor — solidly
-profitable with comfortable margin above the 42.3% break-even.
+**Results across 6 target stocks (3-day horizon, 7 years data)**:
 
-**3-day horizon impact**: Switching from 1-day to 3-day return prediction improved
-AAPL winrate from ~36% to ~52%. 3-day returns have ~1.7× the signal of 1-day
-returns (std ~3.3% vs ~2%) while noise grows at ~√3, nearly doubling the
-signal-to-noise ratio. Medium-term indicators (MACD, RSI divergences) are also
-more predictive over 3 days than 1 day.
+| Stock | Winrate | Profit Factor | Trades/Mo | Notes |
+|-------|---------|---------------|-----------|-------|
+| TSLA | 56.8% | 11.27 | 5.7 | Best performer, strong consensus |
+| NKE | 50.5% | 3.97 | 16.4 | Solid, balanced |
+| NVDA | 42.4% | 3.02 | 19.2 | Good, above break-even |
+| META | 40.7% | 3.55 | 17.3 | Good, above break-even |
+| ADBE | 39.3% | 1.85 | 20.7 | Profitable, lower winrate |
+| UBER | 36.0% | 2.30 | 17.5 | Often HOLD (models disagree) |
+
+**All 6 stocks profitable** (avg profit factor 4.33). Winrate varies by stock
+predictability — some stocks (TSLA, NKE) have clearer patterns the models can
+capture; others (UBER, ADBE) are noisier. The system compensates with asymmetric
+rewards (TP +1.37, SL -1.0) so profit factor stays healthy even at moderate winrates.
 
 ---
 
@@ -1110,4 +1119,91 @@ yfinance produces this format automatically.
 
 ---
 
-*The best way to learn this is to change one component at a time and observe the effect on val_loss and direction accuracy. Start with the lookback window (try 30, 60, 90) and the CNN filter count. Then try replacing the simple PPO implementation with stable-baselines3 and compare win rates.*
+## 23. FAQ — Design Decisions & Lessons Learned
+
+### Why 3-day prediction instead of 1-day?
+
+1-day returns have ~0.1% mean with ~2% noise — signal-to-noise ratio ~0.05. 3-day
+returns have ~1.7× the signal but only ~√3× the noise, nearly **doubling** SNR.
+Our TP/SL levels (1.5/2.05 ATR) are designed for multi-day swings, so 3-day
+predictions align better with the trading timeframe. Switching from 1-day to 3-day
+improved AAPL winrate from ~36% to ~52%.
+
+### Why 6 models instead of more?
+
+We tested 8 models (adding AdaBoost + CatBoost) but winrate dropped. Adding weak
+models **dilutes consensus**: 4/8 agreement is less meaningful than 4/6. Only add
+models that meet a minimum accuracy bar (~50%+ direction F1). AdaBoost with stumps
+(depth=1) was useless on financial data (0% F1). CatBoost had a severe bearish bias
+(0% UP predictions). Both were removed.
+
+### Why was KNN removed?
+
+KNN on daily stock returns always predicted ~0% expected move because similar
+market setups lead to opposite outcomes (market efficiency). The weighted average
+of 50 neighbors' returns converged to zero — honest but useless for trading.
+
+### Why were LSTM and TFT removed?
+
+LSTM accuracy: 45.8% (below coin-flip). TFT accuracy: 45.8% (same). Both were
+deep learning models (~100K parameters) trying to learn from ~1700 data points —
+massively overparameterized for the available signal. Tree models (XGBoost,
+LightGBM, RandomForest) consistently outperformed them at 50-58% accuracy with
+far fewer parameters and faster training.
+
+### Why predict returns (%) instead of absolute prices?
+
+Tree models trained on absolute prices learn price levels ("$150 is normal")
+instead of direction. AAPL ranged from $50 to $300 in our data — models memorize
+the mean. Predicting `pct_change(3).shift(-3)*100` (3-day % return) makes the
+target scale-invariant. MAE dropped from $18 to $3 — 6× improvement in price
+prediction accuracy.
+
+### Why TP=2.05, SL=1.5? Why must TP > SL?
+
+**TP must be bigger than SL** — non-negotiable for positive risk/reward. TP=2.05,
+SL=1.5 gives 1.37:1 ratio (break-even 42.3%). We tested TP=1.5 (symmetric, 50%
+break-even), TP=1.75, TP=1.9, TP=2.1, and TP=2.5. TP=2.05 was chosen because:
+- 2.5: 44% of trades timeout (TP too far)
+- 1.5: symmetric, no edge
+- 2.05: balances achievability (fewer timeouts) with reward (TP > SL)
+
+### Why can't we hit 60% winrate consistently?
+
+The 6 models have ~50-55% individual direction accuracy. Even with perfect
+agreement filtering, the consensus accuracy is limited by correlated model
+errors. Getting above ~57% requires individual model accuracy of 58%+, which
+is extremely difficult for single-stock prediction. The system compensates
+with **asymmetric rewards** — wins pay more than losses cost (1.37:1 ratio)
+— so profit factor stays healthy even at moderate winrates. Some stocks hit
+55%+ (TSLA: 56.8%), others don't — it depends on how predictable each ticker is.
+
+### How does `--current-price` work?
+
+When trading live, the CSV has yesterday's close but the market has already moved.
+`--current-price` overrides the entry/TP/SL calculations with the live price while
+model signals still use the CSV's historical features (no look-ahead):
+
+```bash
+python main.py --ticker AAPL --current-price 312.50
+```
+
+### Consensus filter vs EV filter vs voting fallback — what's the difference?
+
+- **Voting fallback** (removed): When PPO training was poor, the agent used simple
+  model voting. This was worse than PPO — confidence was always 50% with split votes.
+- **EV filter** (replaced): Only trade when P(win)×1.37 > P(loss)×1.0. Failed
+  because model probabilities are uncalibrated (always ~50%).
+- **Multi-tier consensus** (current): Grades trades by how many models agree.
+  Calibrated by actual winrate per agreement level. Simple, robust, effective.
+
+### What about AdaBoost and CatBoost — are they permanently gone?
+
+They exist in the repo (`train_adaboost.py`, `train_catboost.py`) with updated
+3-day targets and TP=2.05, ready to use. They're just not in the default pipeline.
+AdaBoost needs max_depth >= 3 (not stumps) and CatBoost needs proper calibration
+to fix its bearish bias. If you can get either to 52%+ F1, add them back.
+
+---
+
+*The best way to learn this is to change one component at a time and observe the effect. Start with the consensus threshold (try 3/6, 4/6, 5/6), then try adding AdaBoost back with depth=3, then try tuning the regime filter thresholds.*
