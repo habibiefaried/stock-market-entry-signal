@@ -119,7 +119,7 @@ def create_lag_features(df, feature_cols, lags=[1, 2, 3, 5, 10]):
 
     # Create target: next day's closing price
     # We predict tomorrow's close based on today's features
-    df_lagged['Target'] = df_lagged['Close'].pct_change().shift(-1) * 100
+    df_lagged['Target'] = df_lagged['Close'].pct_change(3).shift(-3) * 100  # 3-day forward return
 
     # Drop rows with NaN (from lag/rolling operations)
     # This is necessary because first N rows don't have enough history
@@ -445,7 +445,7 @@ def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_feat
     tr  = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
     atr = float(tr.ewm(span=14, min_periods=14).mean().iloc[-1])
     stop_loss_distance   = 1.5 * atr
-    take_profit_distance = 2.1 * atr
+    take_profit_distance = 2.05 * atr
     volatility           = df['Close'].tail(20).pct_change().dropna().std() * today_price
 
     if signal == "BUY (LONG)":

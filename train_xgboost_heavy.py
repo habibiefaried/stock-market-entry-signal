@@ -217,7 +217,7 @@ def create_rich_features(df, lags=[1, 3, 5]):
     out['BB_squeeze']     = out['BB_width'] / (bb_width_ma + 1e-10)
 
     # Target
-    out['Target'] = out['Close'].pct_change().shift(-1) * 100
+    out['Target'] = out['Close'].pct_change(3).shift(-3) * 100  # 3-day forward return
     out = out.dropna()
 
     all_features = [c for c in out.columns if c not in ['Date', 'Target']]
@@ -429,7 +429,7 @@ def train_xgboost_heavy_model(
     # ATR-based TP/SL: more robust than return-std (captures gap risk)
     atr = float(df['ATR_14'].iloc[-1])
     stop_loss_distance   = 1.5 * atr
-    take_profit_distance = 2.1 * atr
+    take_profit_distance = 2.05 * atr
     volatility           = df[['Close']].tail(20)['Close'].pct_change().dropna().std() * today_price
 
     if signal == "BUY (LONG)":

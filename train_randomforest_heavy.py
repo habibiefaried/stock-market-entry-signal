@@ -61,7 +61,7 @@ def create_features(df):
     out['MA_5'] = c.rolling(5).mean()
     out['MA_10'] = c.rolling(10).mean()
     out['MA_20'] = c.rolling(20).mean()
-    out['Target'] = c.pct_change().shift(-1) * 100
+    out['Target'] = c.pct_change(3).shift(-3) * 100  # 3-day forward return
     return out.dropna().reset_index(drop=True)
 
 
@@ -326,7 +326,7 @@ def run_randomforest_heavy(
     if pd.isna(atr_val) or atr_val <= 0:
         atr_val = today_price * 0.02
 
-    sl_dist = 1.5 * atr_val; tp_dist = 2.1 * atr_val
+    sl_dist = 1.5 * atr_val; tp_dist = 2.05 * atr_val
     volatility = float(df['Close'].tail(20).pct_change().dropna().std() * today_price)
 
     if signal_int == 1:
