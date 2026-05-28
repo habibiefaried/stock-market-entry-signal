@@ -1022,16 +1022,18 @@ def backtest(env, policy, n_episodes=None):
         total_r = 0.0
         while not done:
             action, prob, _ = policy.act_greedy(state)
-            # Soft consensus + EV filter (mirrors get_current_action)
+            # Multi-tier consensus (mirrors get_current_action)
             row = env.signals_df.iloc[env.ep_idx]
             signals_raw = [int(row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
-            n_active = max(signals_raw.count(1), signals_raw.count(-1), 1)
-            agreement = n_active / len(MODEL_NAMES)
-            prob = prob * (0.5 + 0.5 * agreement)
-            probs = [float(row.get(f'{name}_prob', 0.5)) for name in MODEL_NAMES]
-            avg_prob = sum(probs) / max(len(probs), 1)
-            if avg_prob < 0.45:
-                action = ACTION_HOLD; prob = 0.3
+            n_agree = max(signals_raw.count(1), signals_raw.count(-1))
+            reg = float(row.get('regime', 0))
+            if n_agree >= 5:       prob = prob * 1.0
+            elif n_agree >= 4:     prob = prob * 0.85
+            elif n_agree >= 3 and (
+                (action == ACTION_LONG and reg > -0.3) or
+                (action == ACTION_SHORT and reg < 0.3)):
+                                    prob = prob * 0.6
+            else:                  action = ACTION_HOLD; prob = 0.3
             state, reward, done, info = env.step(action)
             total_r += reward
         trades.append({
@@ -1152,22 +1154,23 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False, current_pri
     sl_dist = 1.5 * atr
     tp_dist = 2.05 * atr
 
-    # Soft consensus: scale confidence by model agreement (no hard block)
+    # Multi-tier consensus: more agreement = trade, less = skip or scale down
     signals_raw = [int(last_row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
-    n_long   = signals_raw.count(1)
-    n_short  = signals_raw.count(-1)
-    n_active = max(n_long, n_short, 1)
-    agreement = n_active / len(MODEL_NAMES)  # 0.12 (1/8) to 1.0 (8/8)
-    prob = prob * (0.5 + 0.5 * agreement)   # scale confidence by agreement
+    n_long  = signals_raw.count(1)
+    n_short = signals_raw.count(-1)
+    n_agree = max(n_long, n_short)
+    regime  = float(last_row.get('regime', 0))
 
-    # EV filter: only trade if expected value > 0
-    # EV = P(win) * REWARD_TP + P(loss) * REWARD_SL
-    # With avg ensemble probability as P(win), REWARD_TP=1.37, REWARD_SL=-1.0
-    # Trade if prob_avg * 1.37 > (1 - prob_avg) * 1.0 => prob_avg > 0.422
-    probs = [float(last_row.get(f'{name}_prob', 0.5)) for name in MODEL_NAMES]
-    avg_prob = sum(probs) / max(len(probs), 1)
-    if avg_prob < 0.45:
-        action = ACTION_HOLD; prob = 0.3
+    if n_agree >= 5:
+        prob = prob * 1.0          # strong consensus, full confidence
+    elif n_agree >= 4:
+        prob = prob * 0.85         # good consensus, slight discount
+    elif n_agree >= 3 and (
+        (action == ACTION_LONG and regime > -0.3) or
+        (action == ACTION_SHORT and regime < 0.3)):
+        prob = prob * 0.6          # marginal consensus, only if regime-compatible
+    else:
+        action = ACTION_HOLD; prob = 0.3  # weak consensus, skip
 
     if action == ACTION_LONG:
         sl = close - sl_dist
