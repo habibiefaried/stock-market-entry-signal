@@ -165,11 +165,6 @@ INDICATOR_COLS = [
     'Price_change_1d', 'Price_change_5d',
     'Volatility_5d', 'Volatility_20d',
     'HL_range_pct',
-    'RSI14_slope_3d', 'MACD_accel', 'BB_squeeze',
-    'ADX_14', 'PLUS_DI', 'MINUS_DI',
-    'AO', 'DPO_20', 'CHOP_14', 'COPPOCK',
-    'MOM_5', 'MOM_10',
-    'DISPARITY_5', 'DISPARITY_10',
 ]
 
 
