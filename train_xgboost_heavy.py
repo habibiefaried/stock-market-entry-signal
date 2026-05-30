@@ -217,7 +217,7 @@ def create_rich_features(df, lags=[1, 3, 5]):
     out['BB_squeeze']     = out['BB_width'] / (bb_width_ma + 1e-10)
 
     # ---- New indicators ----
-    high, low = out['High'], out['Low']
+    c = out['Close']; high = out['High']; low = out['Low']
     tr_adx = pd.concat([high - low, (high - c.shift()).abs(), (low - c.shift()).abs()], axis=1).max(axis=1)
     up_move = high.diff(); down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)

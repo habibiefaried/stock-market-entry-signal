@@ -1362,9 +1362,9 @@ def run_agent(csv_file, current_price=None):
 
     # Use more episodes for PyTorch (better gradients handle more data)
     if TORCH_AVAILABLE:
-        n_ep = min(max(len(train_sig) * 20, 10000), 80000)
+        n_ep = min(max(len(train_sig) * 30, 15000), 150000)
     else:
-        n_ep = min(max(len(train_sig) * 15, 8000), 60000)
+        n_ep = min(max(len(train_sig) * 20, 12000), 100000)
 
     est_sec = max(1, n_ep // 7500)
     print(f"  Episodes planned: {n_ep}  (estimated time: ~{est_sec}-{est_sec*2} seconds)")
