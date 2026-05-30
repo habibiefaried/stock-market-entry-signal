@@ -155,6 +155,45 @@ def compute_indicators(df):
     bb_width_ma           = out['BB_width'].rolling(20).mean()
     out['BB_squeeze']     = out['BB_width'] / (bb_width_ma + 1e-10)
 
+    # ---- New indicators ----
+    # ADX (Average Directional Index) — trend strength 0-100
+    high, low = out['High'], out['Low']
+    tr_adx = pd.concat([high - low, (high - c.shift()).abs(), (low - c.shift()).abs()], axis=1).max(axis=1)
+    up_move = high.diff(); down_move = -low.diff()
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
+    atr14 = tr_adx.ewm(span=14, min_periods=14).mean()
+    plus_di = 100 * pd.Series(plus_dm).ewm(span=14, min_periods=14).mean() / (atr14 + 1e-10)
+    minus_di = 100 * pd.Series(minus_dm).ewm(span=14, min_periods=14).mean() / (atr14 + 1e-10)
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
+    out['ADX_14'] = dx.ewm(span=14, min_periods=14).mean()
+    out['PLUS_DI'] = plus_di; out['MINUS_DI'] = minus_di
+
+    # Awesome Oscillator: SMA5(mid) - SMA34(mid), measures momentum
+    mid = (out['High'] + out['Low']) / 2
+    out['AO'] = mid.rolling(5).mean() - mid.rolling(34).mean()
+
+    # DPO (Detrended Price Oscillator): price - SMA(n/2+1) shifted back, shows cycles
+    dpo_period = 20; dpo_ma = c.rolling(dpo_period).mean()
+    out['DPO_20'] = c - dpo_ma.shift(dpo_period // 2 + 1)
+
+    # Choppiness Index: 0-100, high = choppy/ranging, low = trending
+    tr_sum = tr_adx.rolling(14).sum()
+    range_14 = high.rolling(14).max() - low.rolling(14).min()
+    out['CHOP_14'] = 100 * np.log10(tr_sum / (range_14 + 1e-10)) / np.log10(14)
+
+    # Coppock Curve: long-term momentum (ROC smoothed), good for 3-day horizon
+    roc_14 = c.pct_change(14) * 100; roc_11 = c.pct_change(11) * 100
+    coppock_raw = roc_14 + roc_11
+    out['COPPOCK'] = coppock_raw.ewm(span=10, min_periods=10).mean()
+
+    # Momentum (absolute): Close - Close[N]  (periods 5, 10)
+    out['MOM_5'] = c - c.shift(5); out['MOM_10'] = c - c.shift(10)
+
+    # Disparity Index: (Close - MA) / MA * 100  (periods 5, 10)
+    out['DISPARITY_5']  = (c - c.rolling(5).mean())  / (c.rolling(5).mean() + 1e-10) * 100
+    out['DISPARITY_10'] = (c - c.rolling(10).mean()) / (c.rolling(10).mean() + 1e-10) * 100
+
     # RL agent market-state columns
     out['Trend'] = out['Close_SMA20_ratio']   # (Close - SMA20) / SMA20
 
@@ -272,6 +311,10 @@ def load_model_predictions(csv_file):
                'rsi_7': df_raw['RSI_7'].iloc[i],
                'sma50_ratio': df_raw['Close_SMA50_ratio'].iloc[i],
                'regime': compute_regime(df_raw, i),
+               'adx': df_raw['ADX_14'].iloc[i],
+               'chop': df_raw['CHOP_14'].iloc[i],
+               'ao': df_raw['AO'].iloc[i],
+               'dpo': df_raw['DPO_20'].iloc[i],
                'actual_next_close': df_raw['Close'].iloc[i + 1]}
 
         for name, (mdl, scl, feats) in loaded_models.items():
@@ -448,6 +491,10 @@ def _synthetic_signals(df_raw):
             'rsi_7':             df_raw['RSI_7'].iloc[i],
             'sma50_ratio':       df_raw['Close_SMA50_ratio'].iloc[i],
             'regime':            compute_regime(df_raw, i),
+            'adx':               df_raw['ADX_14'].iloc[i],
+            'chop':              df_raw['CHOP_14'].iloc[i],
+            'ao':                df_raw['AO'].iloc[i],
+            'dpo':               df_raw['DPO_20'].iloc[i],
             'actual_next_close': df_raw['Close'].iloc[i + 1],
         }
         for name, score in zip(names, scores):
@@ -531,6 +578,19 @@ def build_state(row):
     # Market regime (BULL=1, BEAR=-1, RANGING=0)
     state.append(float(row.get('regime', 0)))
 
+    # New indicators (normalized for state vector)
+    adx = float(row.get('adx', 25))
+    state.append(adx / 100.0)  # ADX 0-100 → 0-1, trend strength
+
+    chop = float(row.get('chop', 50))
+    state.append(chop / 100.0)  # Choppiness 0-100 → 0-1, high = ranging
+
+    ao = float(row.get('ao', 0))
+    state.append(np.clip(ao / (close + 1e-10) * 100, -5, 5))  # AO normalized by price
+
+    dpo = float(row.get('dpo', 0))
+    state.append(np.clip(dpo / (close + 1e-10) * 100, -5, 5))  # DPO normalized by price
+
     # Derived features: model agreement metrics
     state.append(np.std(signals))  # disagreement measure
     state.append(np.mean(probs))   # avg confidence
@@ -558,7 +618,7 @@ def build_state(row):
     return state_array
 
 
-STATE_DIM  = 27   # enhanced state: 6 models × 2 + 15 market/chart/regime features
+STATE_DIM  = 31   # state: 6 models×2 + 15 market + 4 new indicators (ADX,CHOP,AO,DPO)
 ACTION_DIM = 3    # LONG, SHORT, HOLD
 
 

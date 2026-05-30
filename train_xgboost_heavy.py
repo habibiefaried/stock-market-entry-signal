@@ -165,6 +165,11 @@ INDICATOR_COLS = [
     'Price_change_1d', 'Price_change_5d',
     'Volatility_5d', 'Volatility_20d',
     'HL_range_pct',
+    'RSI14_slope_3d', 'MACD_accel', 'BB_squeeze',
+    'ADX_14', 'PLUS_DI', 'MINUS_DI',
+    'AO', 'DPO_20', 'CHOP_14', 'COPPOCK',
+    'MOM_5', 'MOM_10',
+    'DISPARITY_5', 'DISPARITY_10',
 ]
 
 
@@ -215,6 +220,30 @@ def create_rich_features(df, lags=[1, 3, 5]):
     out['MACD_accel']     = out['MACD_hist'].diff(1)
     bb_width_ma           = out['BB_width'].rolling(20).mean()
     out['BB_squeeze']     = out['BB_width'] / (bb_width_ma + 1e-10)
+
+    # ---- New indicators ----
+    high, low = out['High'], out['Low']
+    tr_adx = pd.concat([high - low, (high - c.shift()).abs(), (low - c.shift()).abs()], axis=1).max(axis=1)
+    up_move = high.diff(); down_move = -low.diff()
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
+    atr14_adx = tr_adx.ewm(span=14, min_periods=14).mean()
+    plus_di = 100 * pd.Series(plus_dm).ewm(span=14, min_periods=14).mean() / (atr14_adx + 1e-10)
+    minus_di = 100 * pd.Series(minus_dm).ewm(span=14, min_periods=14).mean() / (atr14_adx + 1e-10)
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
+    out['ADX_14'] = dx.ewm(span=14, min_periods=14).mean()
+    out['PLUS_DI'] = plus_di; out['MINUS_DI'] = minus_di
+    mid = (out['High'] + out['Low']) / 2
+    out['AO'] = mid.rolling(5).mean() - mid.rolling(34).mean()
+    dpo_ma = c.rolling(20).mean()
+    out['DPO_20'] = c - dpo_ma.shift(20 // 2 + 1)
+    tr_sum = tr_adx.rolling(14).sum()
+    range_14 = high.rolling(14).max() - low.rolling(14).min()
+    out['CHOP_14'] = 100 * np.log10(tr_sum / (range_14 + 1e-10)) / np.log10(14)
+    out['COPPOCK'] = (c.pct_change(14)*100 + c.pct_change(11)*100).ewm(span=10, min_periods=10).mean()
+    out['MOM_5'] = c - c.shift(5); out['MOM_10'] = c - c.shift(10)
+    out['DISPARITY_5']  = (c - c.rolling(5).mean())  / (c.rolling(5).mean() + 1e-10) * 100
+    out['DISPARITY_10'] = (c - c.rolling(10).mean()) / (c.rolling(10).mean() + 1e-10) * 100
 
     # Target
     out['Target'] = out['Close'].pct_change(3).shift(-3) * 100  # 3-day forward return
