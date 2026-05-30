@@ -1096,10 +1096,13 @@ def backtest(env, policy, n_episodes=None):
             n_agree = max(signals_raw.count(1), signals_raw.count(-1))
             reg = float(row.get('regime', 0))
             if n_agree >= 5:       prob = prob * 1.0
-            elif n_agree >= 4:     prob = prob * 0.85
+            elif n_agree >= 4 and (
+                (action == ACTION_LONG and reg > -0.5) or
+                (action == ACTION_SHORT and reg < 0.5)):
+                                    prob = prob * 0.85
             elif n_agree >= 3 and (
-                (action == ACTION_LONG and reg > -0.3) or
-                (action == ACTION_SHORT and reg < 0.3)):
+                (action == ACTION_LONG and reg > 0) or
+                (action == ACTION_SHORT and reg < 0)):
                                     prob = prob * 0.6
             else:                  action = ACTION_HOLD; prob = 0.3
             state, reward, done, info = env.step(action)
@@ -1231,13 +1234,15 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False, current_pri
     regime  = float(last_row.get('regime', 0))
 
     if n_agree >= 5:
-        prob = prob * 1.0; position_size = 1.0     # strong consensus, full size
-    elif n_agree >= 4:
-        prob = prob * 0.85; position_size = 0.75   # good consensus, 3/4 size
+        prob = prob * 1.0; position_size = 1.0     # strong consensus, always trade
+    elif n_agree >= 4 and (
+        (action == ACTION_LONG and regime > -0.5) or
+        (action == ACTION_SHORT and regime < 0.5)):
+        prob = prob * 0.85; position_size = 0.75   # good consensus, regime-aware
     elif n_agree >= 3 and (
-        (action == ACTION_LONG and regime > -0.3) or
-        (action == ACTION_SHORT and regime < 0.3)):
-        prob = prob * 0.6; position_size = 0.5     # marginal, half size
+        (action == ACTION_LONG and regime > 0) or
+        (action == ACTION_SHORT and regime < 0)):
+        prob = prob * 0.6; position_size = 0.5     # marginal, must align with regime
     else:
         action = ACTION_HOLD; prob = 0.3; position_size = 0.0  # skip
 
