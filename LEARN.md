@@ -768,7 +768,7 @@ The agent sees both **model opinions** (the first 14 dims) and **raw chart conte
 TP hit first  -> +1.37   (matches 2.05×ATR take-profit)
 SL hit first  -> -1.0    (matches 1.5×ATR stop-loss)
 Each day held ->  0.0    (no holding penalty)
-Timeout       ->  0.0    (no penalty for unresolved)
+Timeout       -> -0.05   (tiny nudge: prefer trades that resolve)
 Correct dir   -> +0.2    (bonus for matching model consensus)
 Counter-regime -> -0.5 penalty (Section 18.9)
 Regime-aligned -> +0.3 bonus

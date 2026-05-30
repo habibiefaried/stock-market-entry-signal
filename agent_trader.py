@@ -51,7 +51,7 @@ REWARD_TP    =  1.37   # reward when take profit is hit (TP=2.05 vs SL=1.5 → 1
 REWARD_SL    = -1.0    # reward when stop loss is hit
 REWARD_HOLD  =  0.0    # no penalty for holding — only hold when truly uncertain
 MAX_DAYS     =  15     # longer window for 3-day prediction horizon
-REWARD_TIMEOUT = 0.0   # no penalty for timeout — unresolved ≠ wrong
+REWARD_TIMEOUT = -0.05  # tiny nudge: prefer trades that resolve decisively
 REWARD_CORRECT_DIR = 0.2  # bonus for picking direction matching model consensus
 MIN_RECORDS  =  300    # minimum rows needed to run agent
 
@@ -709,6 +709,7 @@ class PPOPolicy:
     def update(self, states, actions, old_log_probs, returns, advantages,
                clip_eps=0.2, entropy_coef=0.02, n_epochs=6):
         """PPO clipped surrogate update (analytical gradient, no autograd)."""
+        advantages = np.clip(advantages, -2.0, 2.0)  # clip extreme advantages
         for _ in range(n_epochs):
             for s, a, old_lp, ret, adv in zip(states, actions, old_log_probs,
                                                returns, advantages):
