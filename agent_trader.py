@@ -1273,7 +1273,7 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False, current_pri
 # MAIN
 # ---------------------------------------------------------------------------
 
-def run_agent(csv_file, current_price=None):
+def run_agent(csv_file, current_price=None, leverage=1.0):
     print("="*70)
     print("RL AGENT TRADER - PPO META-AGENT")
     print("="*70)
@@ -1423,6 +1423,18 @@ def run_agent(csv_file, current_price=None):
     print(f"  Entry Price:      ${current['close']:.2f}")
     print(f"  Stop Loss:        ${current['sl']:.2f} ({current['sl_pct']:+.2f}%)")
     print(f"  Take Profit:      ${current['tp']:.2f} ({current['tp_pct']:+.2f}%)")
+    if leverage > 1.0:
+        sl_lev = current['sl_pct'] * leverage
+        tp_lev = current['tp_pct'] * leverage
+        print(f"\n  --- {leverage:.0f}x Leverage ---")
+        print(f"  Stop Loss P&L:    {sl_lev:+.1f}%")
+        print(f"  Take Profit P&L:  {tp_lev:+.1f}%")
+        # Safety check: max 2% account risk per trade
+        max_risk_pct = 2.0
+        safe_size = max_risk_pct / max(abs(sl_lev), 0.01)
+        print(f"  Max safe position (2% risk): {safe_size:.1%} of account")
+        if abs(sl_lev) > 5.0:
+            print(f"  [!] WARNING: SL={abs(sl_lev):.1f}% is high. Reduce leverage or use smaller position.")
 
     print(f"\nValidation Backtest Performance ({len(val_sig)} days, ~{val_months:.0f} months):")
     print(f"  Total Trades:     {metrics['total_trades']}")
@@ -1480,5 +1492,7 @@ if __name__ == "__main__":
     parser.add_argument('csv_file', type=str, help='Path to CSV file with stock data')
     parser.add_argument('--current-price', type=float, default=None,
                        help='Live current price (overrides last close for entry/TP/SL)')
+    parser.add_argument('--leverage', type=float, default=1.0,
+                       help='Leverage multiplier (e.g. 5 for 5x). Affects displayed P&L and position sizing')
     args = parser.parse_args()
-    run_agent(args.csv_file, current_price=args.current_price)
+    run_agent(args.csv_file, current_price=args.current_price, leverage=args.leverage)
