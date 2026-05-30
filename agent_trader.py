@@ -237,6 +237,13 @@ def load_model_predictions(csv_file):
                 scl    = joblib.load(sp)
                 with open(fp) as fh:
                     feats = [line.strip() for line in fh if line.strip()]
+                # Validate features: warn if model expects features not in our data
+                missing = [f for f in feats if f not in df_raw.columns
+                          and '_lag_' not in f
+                          and not f.startswith(('Price_change_', 'Volatility_', 'MA_', 'SMA_', 'EMA_'))]
+                if missing:
+                    print(f"  Warning: {name} expects {len(missing)} features not in data "
+                          f"(will compute or default to 0): {missing[:5]}...")
                 loaded_models[name] = (mdl, scl, feats)
                 print(f"  Loaded {name} ({len(feats)} features)")
             except Exception as e:
@@ -1156,6 +1163,7 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False, current_pri
     tp_dist = 2.05 * atr
 
     # Multi-tier consensus: more agreement = trade, less = skip or scale down
+    position_size = 1.0  # default: full size (voting path or 5-6/6 consensus)
     signals_raw = [int(last_row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
     n_long  = signals_raw.count(1)
     n_short = signals_raw.count(-1)
@@ -1163,15 +1171,15 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False, current_pri
     regime  = float(last_row.get('regime', 0))
 
     if n_agree >= 5:
-        prob = prob * 1.0          # strong consensus, full confidence
+        prob = prob * 1.0; position_size = 1.0     # strong consensus, full size
     elif n_agree >= 4:
-        prob = prob * 0.85         # good consensus, slight discount
+        prob = prob * 0.85; position_size = 0.75   # good consensus, 3/4 size
     elif n_agree >= 3 and (
         (action == ACTION_LONG and regime > -0.3) or
         (action == ACTION_SHORT and regime < 0.3)):
-        prob = prob * 0.6          # marginal consensus, only if regime-compatible
+        prob = prob * 0.6; position_size = 0.5     # marginal, half size
     else:
-        action = ACTION_HOLD; prob = 0.3  # weak consensus, skip
+        action = ACTION_HOLD; prob = 0.3; position_size = 0.0  # skip
 
     if action == ACTION_LONG:
         sl = close - sl_dist
@@ -1182,15 +1190,17 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False, current_pri
     else:  # HOLD — no trade
         sl = close
         tp = close
+        position_size = 0.0
 
     return {
-        'action':      ACTIONS[action],
-        'confidence':  prob * 100,
-        'close':       close,
-        'sl':          sl,
-        'tp':          tp,
-        'sl_pct':      (sl - close) / close * 100,
-        'tp_pct':      (tp - close) / close * 100,
+        'action':        ACTIONS[action],
+        'confidence':    prob * 100,
+        'position_size': position_size,
+        'close':         close,
+        'sl':            sl,
+        'tp':            tp,
+        'sl_pct':        (sl - close) / close * 100,
+        'tp_pct':        (tp - close) / close * 100,
     }
 
 
@@ -1344,6 +1354,7 @@ def run_agent(csv_file, current_price=None):
     print(f"\nCurrent Decision ({ticker}):")
     print(f"  AGENT_ACTION:     {current['action']}")
     print(f"  AGENT_CONFIDENCE: {current['confidence']:.1f}%")
+    print(f"  Position Size:    {current['position_size']:.0%}")
     print(f"  Entry Price:      ${current['close']:.2f}")
     print(f"  Stop Loss:        ${current['sl']:.2f} ({current['sl_pct']:+.2f}%)")
     print(f"  Take Profit:      ${current['tp']:.2f} ({current['tp_pct']:+.2f}%)")
