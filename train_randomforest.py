@@ -119,7 +119,7 @@ def create_lag_features(df, feature_cols, lags=[1, 2, 3, 5, 10]):
 
     # Create target: next day's closing price
     # We predict tomorrow's close based on today's features
-    df_lagged['Target'] = df_lagged['Close'].pct_change(3).shift(-3) * 100  # 3-day forward return
+    df_lagged['Target'] = df_lagged['Close'].pct_change(5).shift(-5) * 100  # 5-day forward return
 
     # Drop rows with NaN (from lag/rolling operations)
     # This is necessary because first N rows don't have enough history

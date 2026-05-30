@@ -127,7 +127,7 @@ def create_lag_features(df, feature_cols, lags=[1, 2, 3, 5, 10]):
 
     # Target: Next day's closing price
     # Target = tomorrow's % return (better for model learning than absolute price)
-    df_lagged['Target'] = df_lagged['Close'].pct_change(3).shift(-3) * 100  # 3-day forward return
+    df_lagged['Target'] = df_lagged['Close'].pct_change(5).shift(-5) * 100  # 5-day forward return
 
     # Drop rows with NaN (created by shift operations)
     # - First few rows: no data for lag features (Close_lag_10 needs 10 prior days)

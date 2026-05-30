@@ -136,7 +136,7 @@ def create_lag_features(df, feature_cols, lags=[1, 2, 3, 5, 10]):
     # Target: Next day's closing price
     # shift(-1) moves data UP by 1 row, so current row gets NEXT day's value
     # This is what we're trying to predict!
-    df_lagged['Target'] = df_lagged['Close'].pct_change(3).shift(-3) * 100  # 3-day forward return
+    df_lagged['Target'] = df_lagged['Close'].pct_change(5).shift(-5) * 100  # 5-day forward return
 
     # Drop rows with NaN (created by shift operations)
     # - First few rows: no data for lag features (Close_lag_10 needs 10 prior days)

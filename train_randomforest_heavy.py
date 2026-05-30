@@ -61,7 +61,7 @@ def create_features(df):
     out['MA_5'] = c.rolling(5).mean()
     out['MA_10'] = c.rolling(10).mean()
     out['MA_20'] = c.rolling(20).mean()
-    out['Target'] = c.pct_change(3).shift(-3) * 100  # 3-day forward return
+    out['Target'] = c.pct_change(5).shift(-5) * 100  # 5-day forward return
     return out.dropna().reset_index(drop=True)
 
 

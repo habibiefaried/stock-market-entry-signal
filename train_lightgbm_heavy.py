@@ -240,7 +240,7 @@ def create_rich_features(df, lags=[1, 3, 5]):
     out['DISPARITY_10'] = (c - c.rolling(10).mean()) / (c.rolling(10).mean() + 1e-10) * 100
 
     # Target
-    out['Target'] = out['Close'].pct_change(3).shift(-3) * 100  # 3-day forward return
+    out['Target'] = out['Close'].pct_change(5).shift(-5) * 100  # 5-day forward return
     out = out.dropna()
 
     all_features = [c for c in out.columns if c not in ['Date', 'Target']]
