@@ -127,7 +127,7 @@ def create_lag_features(df, feature_cols, lags=[1, 2, 3, 5, 10]):
 
     # Target: Next day's closing price
     # Target = tomorrow's % return (better for model learning than absolute price)
-    df_lagged['Target'] = df_lagged['Close'].pct_change(5).shift(-5) * 100  # 5-day forward return
+    df_lagged['Target'] = df_lagged['Close'].pct_change().shift(-1) * 100  # next-day return
 
     # Drop rows with NaN (created by shift operations)
     # - First few rows: no data for lag features (Close_lag_10 needs 10 prior days)
@@ -426,8 +426,8 @@ def train_xgboost_model(csv_file, n_estimators=2000, learning_rate=0.01, max_dep
     h, l, c = df['High'], df['Low'], df['Close']
     tr  = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
     atr = float(tr.ewm(span=14, min_periods=14).mean().iloc[-1])
-    stop_loss_distance   = 1.5 * atr
-    take_profit_distance = 2.05 * atr
+    stop_loss_distance   = 1.0 * atr
+    take_profit_distance = 1.5 * atr
     volatility           = df['Close'].tail(20).pct_change().dropna().std() * today_price
 
     if signal == "BUY (LONG)":

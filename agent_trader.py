@@ -47,7 +47,7 @@ ACTION_LONG  = 0
 ACTION_SHORT = 1
 ACTION_HOLD  = 2
 
-REWARD_TP    =  1.37   # reward when take profit is hit (TP=2.05 vs SL=1.5 → 1.37:1 ratio)
+REWARD_TP    =  1.5    # reward when take profit is hit (TP=1.5 vs SL=1.0 → 1.5:1 ratio)
 REWARD_SL    = -1.0    # reward when stop loss is hit
 REWARD_HOLD  =  0.0    # no penalty for holding — only hold when truly uncertain
 MAX_DAYS     =  15     # longer window for 3-day prediction horizon
@@ -849,8 +849,8 @@ class TradingEnv:
 
         # ATR-based TP/SL: more robust than return-std (consistent with model scripts)
         atr    = max(float(row.get('atr', 0.0)), 0.01 * close)  # fallback: 1% of price
-        sl_dist = 1.5 * atr
-        tp_dist = 2.05 * atr
+        sl_dist = 1.0 * atr
+        tp_dist = 1.5 * atr
 
         if action == ACTION_HOLD:
             reward = REWARD_HOLD
