@@ -55,6 +55,8 @@ def run_pipeline(ticker, months=84):
         'sharpe': _num(r'Sharpe Ratio</div>\s*<div[^>]*>([\d.]+)'),
         'trades': int(_num(r'Total Trades</div>\s*<div[^>]*>(\d+)')),
         'entry': _num(r'Entry Price</div>\s*<div[^>]*>\$([\d.]+)'),
+        'sl_pct': _num(r'Stop Loss</div>\s*<div[^>]*>\$[\d.]+\s*\(([+-]?[\d.]+)%\)'),
+        'tp_pct': _num(r'Take Profit</div>\s*<div[^>]*>\$[\d.]+\s*\(([+-]?[\d.]+)%\)'),
     }
 
 
@@ -110,14 +112,15 @@ def main():
     lines.append(f"TP=1.5 ATR  |  SL=1.0 ATR  |  Ratio 1.5:1  |  Break-even 40%")
     lines.append("=" * 70)
     lines.append("")
-    lines.append(f"{'#':>3s}  {'Ticker':<8s} {'Action':>6s} {'Conf':>7s} {'WinRate':>8s} {'PF':>7s} {'Sharpe':>7s} {'Trades':>7s} {'Entry':>10s}")
-    lines.append("-" * 70)
+    lines.append(f"{'#':>3s}  {'Ticker':<8s} {'Action':>6s} {'Conf':>7s} {'WinRate':>8s} {'PF':>7s} {'SL%':>7s} {'TP%':>7s} {'Trades':>7s} {'Entry':>10s}")
+    lines.append("-" * 82)
 
     for rank, r in enumerate(results[:top_n], 1):
         lines.append(
             f"{rank:>3d}  {r['ticker']:<8s} {r['decision']:>6s} "
             f"{r['confidence']:>6.1f}% {r['winrate']:>7.1f}% "
-            f"{r['profit_factor']:>6.2f} {r['sharpe']:>6.2f} "
+            f"{r['profit_factor']:>6.2f} "
+            f"{r['sl_pct']:>+6.1f}% {r['tp_pct']:>+6.1f}% "
             f"{r['trades']:>7d} ${r['entry']:>9.2f}"
         )
 
@@ -127,7 +130,8 @@ def main():
     lines.append("  Conf   = Agent confidence in the current trade direction")
     lines.append("  WR     = Backtest winrate on validation data (~7 months)")
     lines.append("  PF     = Profit Factor (gross profit / gross loss, >1 = profitable)")
-    lines.append("  Sharpe = Risk-adjusted return (annualised, >1 = good)")
+    lines.append("  SL%    = Stop Loss distance from entry (percentage)")
+    lines.append("  TP%    = Take Profit distance from entry (percentage)")
     lines.append("")
     lines.append("DISCLAIMER: Rankings are statistical, NOT financial advice.")
     lines.append("Always verify with your own analysis before placing real trades.")
