@@ -67,18 +67,20 @@ In a time series, row t depends on row t-1. Shuffling destroys the signal. This 
 
 ### 2.2 The target
 
-All models predict the **3-day forward return** (percentage). Direction (BUY/SELL/HOLD) is derived from the predicted return:
+All models predict the **next-day return** (percentage). Direction (BUY/SELL/HOLD)
+is derived from the predicted return:
 
 ```
-Target = pct_change(3).shift(-3) * 100   # (Close[t+3] - Close[t]) / Close[t] * 100
+Target = pct_change().shift(-1) * 100    # (Close[t+1] - Close[t]) / Close[t] * 100
 if predicted_return > threshold   ->  BUY (LONG)
 if predicted_return < -threshold  ->  SHORT (SELL)
 else                              ->  HOLD
 ```
 
-The 3-day horizon improves signal-to-noise ~2× over 1-day predictions. Medium-term
-indicator patterns (MACD crossovers, RSI divergences) are naturally more predictive
-over 3 days, and the TP/SL levels (1.5/2.05 ATR) are designed for multi-day swings.
+1-day prediction was chosen over multi-day (3-day, 5-day tested) because:
+- Daily error doesn't compound across multiple candles
+- Faster feedback loop for live trading
+- TP/SL at 1.0/1.5 ATR are achievable in a single session
 
 ---
 
@@ -593,21 +595,21 @@ Weights normalise if any approach is unavailable. Final call:
 ```python
 # ATR-based TP/SL (consistent across all model scripts + RL environment)
 atr = ATR_14  # Average True Range, 14-period
-stop_loss   = entry_price ± 1.5 * atr   # wider SL: fewer noise stop-outs
-take_profit = entry_price ∓ 2.05 * atr  # slightly closer TP, more achievable
+stop_loss   = entry_price ± 1.0 * atr   # tight SL: cut losses fast on wrong calls
+take_profit = entry_price ∓ 1.5 * atr   # achievable in a single session
 ```
 
-Risk/reward = 2.05 / 1.5 = 1.37:1. Break-even win rate = 1.5 / (1.5 + 2.05) = 42.3%.
-With the regime filter (Section 18.9) and 3/6 consensus filter (Section 18.10),
-the system achieves ~36% winrate with profit factor > 2.3 in backtests.
+Risk/reward = 1.5 / 1.0 = 1.5:1. Break-even win rate = 1.0 / (1.0 + 1.5) = 40%.
+With the multi-tier consensus filter (Section 18.10) and regime filter (Section 18.9),
+the system achieves 45% avg winrate with 2.86 profit factor across 10 stocks.
 
-**Why 1.5 ATR for SL**: ATR is the average daily range. At 1.0× ATR, normal
-daily noise triggers ~40% of stops. At 1.5× ATR, trades have breathing room while
-still capping risk.
+**Why 1.0 ATR for SL**: For 1-day predictions, you want to cut losses fast on
+wrong calls. 1.0 ATR gives trades breathing room from normal noise while keeping
+the stop tight enough for daily trading.
 
-**Why 2.05 ATR for TP**: Slightly closer than 2.1, improving winrate while keeping
-TP > SL (non-negotiable for positive risk/reward). At 2.5 ATR, 44% of trades
-timeout; at 2.05, more trades resolve in the 10-day window.
+**Why 1.5 ATR for TP**: Achievable in a single session. TP must be > SL
+(non-negotiable for positive risk/reward). 1.5:1 ratio means a winning trade
+pays for 1.5 losing trades.
 
 ### 13.2 5x Leverage P&L
 
@@ -777,10 +779,10 @@ Max 15 days   (3-day prediction horizon needs longer window)
 
 **TP/SL levels** (consistent across all model scripts and the RL environment):
 ```
-Stop Loss   = entry ± 1.5 * ATR_14
-Take Profit = entry ∓ 2.05 * ATR_14
-Risk/Reward = 1.37:1
-Break-even  = 42.3%
+Stop Loss   = entry ± 1.0 * ATR_14
+Take Profit = entry ∓ 1.5 * ATR_14
+Risk/Reward = 1.5:1
+Break-even  = 40%
 ```
 Using ATR_14 instead of rolling return-std captures intraday gap risk that return-std misses.
 
@@ -830,10 +832,10 @@ saved weights when re-running on the same CSV file.
 **Current TP/SL**: TP = 2.05 × ATR, SL = 1.5 × ATR. Ratio = 1.37:1.
 Break-even = 1.5 / 3.55 = 42.3%.
 
-**Current performance (6 target stocks, 3-day horizon, multi-tier consensus)**:
-Avg winrate 44.3%, avg profit factor 4.33. All stocks profitable. TSLA leads at
-56.8% winrate. Winrate ceiling varies by stock (36-57%) based on model accuracy
-on each ticker — some stocks are inherently more predictable than others.
+**Current performance (10 target stocks, 1-day horizon, TP=1.5/SL=1.0)**:
+Avg winrate 45.0%, avg profit factor 2.86. All stocks profitable. WMT leads at
+55.0% winrate. Winrate ceiling varies by stock (34-55%) based on model accuracy
+on each ticker.
 
 ### 18.6 Signal File Loading (LSTM / TFT)
 
@@ -900,30 +902,29 @@ trades are graded by how many models agree:
 
 | Agreement | Confidence Scale | Regime Check | Rationale |
 |-----------|-----------------|-------------|-----------|
-| 5-6/6 | 100% | None | Strong consensus, full send |
-| 4/6 | 85% | None | Good agreement, slight discount |
-| 3/6 | 60% | Must be regime-compatible | Marginal, only with trend |
+| 5-6/6 | 100% | Always | Near-unanimous, full send |
+| 4/6 | 85% | Regime > -0.5 (LONG) or < 0.5 (SHORT) | Good agreement, regime-aware |
+| 3/6 | 60% | Regime > 0 (LONG) or < 0 (SHORT) | Must align with trend |
 | <3/6 | SKIP | — | Not enough agreement |
 
-This removes "lone wolf" trades where the PPO agent goes against the majority
-while still allowing enough trades for practical swing trading. Implemented in
-both `backtest()` and `get_current_action()`.
+This removes "lone wolf" trades and counter-trend trades that killed live performance.
+Implemented in both `backtest()` and `get_current_action()`.
 
-**Results across 6 target stocks (3-day horizon, 7 years data)**:
+**Results across 10 target stocks (1-day horizon, 7 years data)**:
 
-| Stock | Winrate | Profit Factor | Trades/Mo | Notes |
-|-------|---------|---------------|-----------|-------|
-| TSLA | 56.8% | 11.27 | 5.7 | Best performer, strong consensus |
-| NKE | 50.5% | 3.97 | 16.4 | Solid, balanced |
-| NVDA | 42.4% | 3.02 | 19.2 | Good, above break-even |
-| META | 40.7% | 3.55 | 17.3 | Good, above break-even |
-| ADBE | 39.3% | 1.85 | 20.7 | Profitable, lower winrate |
-| UBER | 36.0% | 2.30 | 17.5 | Often HOLD (models disagree) |
+| Stock | Winrate | Profit Factor | Confidence | Notes |
+|-------|---------|---------------|------------|-------|
+| WMT | 55.0% | 3.33 | 97.9% | Top performer |
+| INTC | 51.9% | 3.67 | 80.7% | Strong |
+| AMZN | 50.0% | 2.91 | 30% (HOLD) | Models disagree, skip |
+| ADBE | 49.5% | 2.75 | 30% (HOLD) | Models disagree, skip |
+| MSFT | 45.2% | 3.55 | 91.7% | Solid |
+| AMD | 42.1% | 3.24 | 50.5% | Decent |
+| NVDA | 40.8% | 1.90 | 90.0% | Profitable |
+| META | 36.8% | 2.02 | 95.0% | High conf, lower WR |
+| PFE | 34.2% | 2.02 | 30% (HOLD) | Tough stock |
 
-**All 6 stocks profitable** (avg profit factor 4.33). Winrate varies by stock
-predictability — some stocks (TSLA, NKE) have clearer patterns the models can
-capture; others (UBER, ADBE) are noisier. The system compensates with asymmetric
-rewards (TP +1.37, SL -1.0) so profit factor stays healthy even at moderate winrates.
+**All 10 stocks profitable** (avg 45.0% winrate, 2.86 profit factor).
 
 ---
 
@@ -1121,13 +1122,15 @@ yfinance produces this format automatically.
 
 ## 23. FAQ — Design Decisions & Lessons Learned
 
-### Why 3-day prediction instead of 1-day?
+### Why 1-day prediction instead of multi-day?
 
-1-day returns have ~0.1% mean with ~2% noise — signal-to-noise ratio ~0.05. 3-day
-returns have ~1.7× the signal but only ~√3× the noise, nearly **doubling** SNR.
-Our TP/SL levels (1.5/2.05 ATR) are designed for multi-day swings, so 3-day
-predictions align better with the trading timeframe. Switching from 1-day to 3-day
-improved AAPL winrate from ~36% to ~52%.
+We tested 3-day and 5-day. Both improved backtest winrate on paper (AAPL hit 60.5%
+at 5-day). But live trading showed all red trades. Why? With daily candles predicting
+5 days ahead, there are 5 daily noise events between prediction and resolution.
+A correct 5-day call can still get stopped out on day 2 by intra-week noise.
+**1-day prediction matches 1-day candles** — less error compounding, faster
+feedback, SL/TP are achievable in a single session. Live performance improved
+after reverting to 1-day.
 
 ### Why 6 models instead of more?
 
