@@ -34,6 +34,17 @@ This document walks through every concept behind this codebase from raw maths to
 
 ---
 
+> **Note on Sections 6-11:** The standalone CNN-LSTM and CNN-TFT deep learning
+> models were removed from the pipeline after extensive testing showed they
+> underperformed tree-based ensembles on this dataset (~45.8% direction accuracy
+> vs 50-58% for trees). These sections are kept for educational value and
+> because the LSTM architecture is still used inside `train_catboost_bayes.py`
+> as a feature generator (see Section 23 FAQ). Keras is no longer a required
+> dependency; the only Keras usage is an optional import inside the BO-CatBoost
+> script.
+
+---
+
 ## 1. The Problem We Are Solving
 
 You are given a time series of daily stock prices (Open, High, Low, Close, Volume -- OHLCV). You want to answer one question:
@@ -48,7 +59,12 @@ This requires:
 - **Ensemble reasoning** -- no single model is reliable; combine multiple approaches
 - **Meta-agent decision** -- a PPO RL agent reads all model outputs and makes a final LONG/SHORT/HOLD call
 
-The system trains 7 models (CNN-LSTM, CNN-TFT, XGBoost, XGBoost-Heavy, LightGBM, LightGBM-Heavy, RandomForest), aggregates their opinions, then passes everything to a PPO reinforcement learning agent that outputs the final trade recommendation.
+The system trains 7 models (XGBoost, XGBoost-Heavy, LightGBM, LightGBM-Heavy, RandomForest, RandomForest-Heavy, CatBoost-Bayes), aggregates their opinions, then passes everything to a PPO reinforcement learning agent that outputs the final trade recommendation.
+
+The deep learning models (CNN-LSTM, CNN-TFT) were removed from the pipeline
+after extensive testing showed they underperformed tree-based models on this
+problem (~45.8% direction accuracy vs 50-58% for trees). The LSTM architecture
+lives on inside `train_catboost_bayes.py` as a feature generator (Section 23 FAQ).
 
 ---
 
@@ -736,10 +752,12 @@ Each of the 7 models produces a signal (BUY/SHORT/HOLD) and a TP win probability
 
 ### 18.2 State, Action, Reward
 
-**State vector (29 dimensions):**
+**State vector (33 dimensions):**
 ```
-7 model signals       (LONG=1, SHORT=-1, HOLD=0)
-7 model probs         (0..1, per-trade ensemble prob where available)
+7 model signals       xgboost, xgboost_heavy, lightgbm, lightgbm_heavy,
+                      randomforest, randomforest_heavy, catboost_bayes
+                      (LONG=1, SHORT=-1, HOLD=0)
+7 model probs         (0..1, per-trade direction probability)
 RSI_14 normalised     (-1..1 mapped from 0..100)
 RSI_7  normalised     (-1..1, shorter-term momentum)
 Trend                 (Close - SMA20) / SMA20  ratio
@@ -751,6 +769,10 @@ Stochastic %K         (-1..1 normalised)
 Volume ratio          (current vol / 20-day avg, centred at 0)
 SMA50 distance        (Close vs SMA50 ratio)
 Market regime         (1=BULL, -1=BEAR, 0=RANGING)
+ADX_14                (trend strength 0-100, normalised to 0-1)
+Choppiness_14         (ranging indicator 0-100, normalised to 0-1)
+Awesome Oscillator    (momentum, normalised by price)
+DPO_20                (detrended price oscillator, normalised)
 Model agreement       (std of model signals)
 Avg model confidence  (mean of probs)
 Signal consensus      (majority vote direction)
@@ -767,14 +789,14 @@ The agent sees both **model opinions** (the first 14 dims) and **raw chart conte
 
 **Rewards:**
 ```
-TP hit first  -> +1.37   (matches 2.05×ATR take-profit)
-SL hit first  -> -1.0    (matches 1.5×ATR stop-loss)
+TP hit first  -> +1.5    (matches 1.5×ATR take-profit)
+SL hit first  -> -1.0    (matches 1.0×ATR stop-loss)
 Each day held ->  0.0    (no holding penalty)
 Timeout       -> -0.05   (tiny nudge: prefer trades that resolve)
 Correct dir   -> +0.2    (bonus for matching model consensus)
 Counter-regime -> -0.5 penalty (Section 18.9)
 Regime-aligned -> +0.3 bonus
-Max 15 days   (3-day prediction horizon needs longer window)
+Max 15 days   (1-day prediction horizon with generous timeout)
 ```
 
 **TP/SL levels** (consistent across all model scripts and the RL environment):
@@ -823,32 +845,28 @@ saved weights when re-running on the same CSV file.
 
 | Metric | Target | Meaning |
 |--------|--------|---------|
-| Win Rate | >= 36% | Above break-even (42.3%) is hard with current model accuracy (~55%); profit factor matters more |
+| Win Rate | >= 36% | Above break-even (40%) is hard with current model accuracy (~55%); profit factor matters more |
 | Profit Factor | >= 1.5 | Gross profit / gross loss (> 1.0 = profitable) |
 | Sharpe Ratio | >= 1.0 | Risk-adjusted return (annualised) |
 | Max Drawdown | > -20% | Worst peak-to-trough (note: can read -100% when equity starts near 0) |
 | Trades/Month | >= 10 | Enough activity for swing trading |
 
-**Current TP/SL**: TP = 2.05 × ATR, SL = 1.5 × ATR. Ratio = 1.37:1.
-Break-even = 1.5 / 3.55 = 42.3%.
+**Current TP/SL**: TP = 1.5 x ATR, SL = 1.0 x ATR. Ratio = 1.5:1.
+Break-even = 1.0 / (1.0 + 1.5) = 40%.
 
 **Current performance (10 target stocks, 1-day horizon, TP=1.5/SL=1.0)**:
 Avg winrate 45.0%, avg profit factor 2.86. All stocks profitable. WMT leads at
 55.0% winrate. Winrate ceiling varies by stock (34-55%) based on model accuracy
 on each ticker.
 
-### 18.6 Signal File Loading (LSTM / TFT)
+### 18.6 Model Predictions for RL Agent
 
-LSTM and TFT cannot be loaded by the RL agent like pkl files (they require Keras with custom layers). Instead, when they finish training they write a small text file:
-
-```
-lstm_signal.txt
-  signal: 1          (1=LONG, -1=SHORT, 0=HOLD)
-  prob: 0.73         (directional probability)
-  ensemble_prob: 68.4  (weighted average of 3-method probability analysis)
-```
-
-The RL agent reads this file at startup. If the file does not exist (LSTM/TFT not yet trained), those two slots in the state vector default to 0/0.5 (neutral).
+All 7 models save their predictions as `.pkl` files (plus scaler and
+feature-name text files). The RL agent's `load_model_predictions()` reads
+these files at startup and runs them in walk-forward fashion on the full
+dataset to generate out-of-sample signals for each row. If no pkl models
+are found, `_synthetic_signals()` generates proxy signals from raw indicators
+as a fallback (lower quality, but allows standalone agent testing).
 
 ### 18.7 Weight Persistence
 
@@ -861,9 +879,12 @@ if the fingerprint matches, the agent warm-starts from saved weights. If the CSV
 changed (different ticker, date range, or state dimension), training starts fresh.
 This means re-runs on the same data are faster and the agent starts from a learned policy.
 
-### 18.8 Fallback When No PKL Models Exist
+### 18.8 Fallback Synthetic Signals
 
-If the 7 model `.pkl` files have not been trained yet, `_synthetic_signals()` generates proxy signals from the raw indicators (RSI, MACD, trend) for all 7 model slots. This allows `agent_trader.py` to run standalone for testing, but the quality will be lower than when real model outputs are used.
+If no model `.pkl` files exist (models not yet trained), `_synthetic_signals()`
+generates proxy signals for all 7 model slots from the raw indicators (RSI, MACD,
+trend) plus random noise. This allows `agent_trader.py` to run standalone for
+testing, but the quality will be lower than when real model outputs are used.
 
 ### 18.9 Market Regime Filter
 
@@ -933,14 +954,21 @@ Implemented in both `backtest()` and `get_current_action()`.
 ### 19.1 Parallel Model Training
 
 ```python
+models = [
+    ('XGBoost',              'train_xgboost.py'),
+    ('XGBoost-Heavy',        'train_xgboost_heavy.py'),
+    ('LightGBM',             'train_lightgbm.py'),
+    ('LightGBM-Heavy',       'train_lightgbm_heavy.py'),
+    ('RandomForest',         'train_randomforest.py'),
+    ('RandomForest-Heavy',   'train_randomforest_heavy.py'),
+    ('CatBoost-Bayes',       'train_catboost_bayes.py'),
+]
+
 with ThreadPoolExecutor(max_workers=7) as executor:
-    futures = {executor.submit(run_model, name, script, csv): name
-               for name, script in models}
-    for future in as_completed(futures):
-        results.append(future.result())
+    ...
 ```
 
-Each model runs as a **subprocess** (`subprocess.run`), not a thread. Python's GIL prevents true CPU parallelism in threads, but subprocesses are independent OS processes. On a GPU machine, all 7 subprocesses can use the GPU simultaneously via CUDA's internal scheduler.
+Each model runs as a **subprocess** (`subprocess.run`), not a thread — Python's GIL prevents true CPU parallelism in threads, but subprocesses are independent OS processes. On a GPU machine, all 7 subprocesses share the GPU via CUDA's internal scheduler.
 
 `as_completed` yields results as they finish (fastest model reports first).
 
@@ -984,39 +1012,42 @@ The report is built as a list of strings, then joined and written to disk. The R
 
 | File | Purpose | Output Files |
 |------|---------|--------------|
-| `main.py` | Orchestrator: runs all models in parallel, calls RL agent, generates HTML report | `RESULT-{TICKER}-{DATE}.html` |
+| `main.py` | Orchestrator: runs all 7 models in parallel, calls RL agent, generates HTML report | `RESULT-{TICKER}-{DATE}.html` |
 | `fetch_stock_data.py` | Standalone data fetcher using yfinance | `{TICKER}_daily_data_{DATE}.csv` |
-| `train_xgboost.py` | XGBoost (20 features, 2000 trees) | `xgboost_model.pkl` |
-| `train_xgboost_heavy.py` | XGBoost with 38 indicators, 3000 trees | `xgboost_heavy_model.pkl` |
-| `train_lightgbm.py` | LightGBM (20 features, 2000 trees) | `lightgbm_model.pkl` |
-| `train_lightgbm_heavy.py` | LightGBM with 38 indicators, 3000 trees | `lightgbm_heavy_model.pkl` |
-| `train_randomforest.py` | Random Forest (1000 trees, walk-forward) | `randomforest_model.pkl` |
-| `train_randomforest_heavy.py` | Random Forest-Heavy (1500 trees, depth 20, 50% bootstrap, 7-fold walk-forward) | `randomforest_heavy_model.pkl` |
-| `train_catboost_bayes.py` | LSTM-BO-CatBoost: LSTM feature generator + Bayesian-optimized CatBoost (Sun & Tian 2023) | `catboost_bayes_model.pkl` |
-| `agent_trader.py` | PPO RL: reads 7 model pkl files, 33-dim state, consensus + regime filters | `rl_agent_torch.pt` (warm-start) |
-| `trade_probability_analyzer.py` | Three-approach win probability analysis, called by all model scripts | (no file output -- returns results) |
-| `test_gpu.py` | Quick GPU availability check | (stdout only) |
+| `rank_stocks.py` | Batch runner: ranks all tickers in `target_stock.txt` by agent confidence | `stock-ranking-result.txt` |
+| `train_xgboost.py` | XGBoost (5 OHLCV features + lags, 2000 trees) | `xgboost_model.pkl` + scaler + features |
+| `train_xgboost_heavy.py` | XGBoost with ~50 indicator features + new indicators (ADX, AO, DPO, etc.), 5000 trees | `xgboost_heavy_model.pkl` + scaler + features |
+| `train_lightgbm.py` | LightGBM (5 OHLCV features + lags, 2000 trees) | `lightgbm_model.pkl` + scaler + features |
+| `train_lightgbm_heavy.py` | LightGBM with ~50 indicator features + new indicators, 5000 trees | `lightgbm_heavy_model.pkl` + scaler + features |
+| `train_randomforest.py` | Random Forest (1000 trees, 5-fold walk-forward) | `randomforest_model.pkl` + scaler + features |
+| `train_randomforest_heavy.py` | Random Forest-Heavy (1500 trees, depth 20, 50% bootstrap, 7-fold walk-forward) | `randomforest_heavy_model.pkl` + scaler + features |
+| `train_catboost_bayes.py` | LSTM feature generator + Bayesian-optimized CatBoost (Sun & Tian 2023) | `catboost_bayes_model.pkl` + scaler + features |
+| `agent_trader.py` | PPO RL meta-agent: reads 7 model pkl files, 33-dim state, consensus + regime filters | `rl_agent_torch.pt` or `rl_agent_weights.npz` (warm-start) |
+| `trade_probability_analyzer.py` | Three-approach win probability analysis, called by all model scripts | (no file output — returns results) |
 
 ### 20.1 How to Run
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
-# For GPU: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-# For CPU: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# PyTorch is required (RL agent PPO). GPU recommended but not required.
 
-# Fetch data and run all models + RL agent (default: 96 months = 8 years)
+# Fetch data and run all models + RL agent (default: 84 months = 7 years)
 python main.py --ticker MSFT
-python main.py --ticker MSFT --months 120   # 10 years (even more data for RL agent)
+python main.py --ticker MSFT --months 120   # 10 years
 
 # Use existing CSV
 python main.py MSFT_daily_data_20260524.csv
 
+# Live trading with current price override
+python main.py --ticker AAPL --current-price 312.50
+
 # Run RL agent standalone (needs pkl files already trained)
 python agent_trader.py MSFT_daily_data_20260524.csv
 
-# Check GPU
-python test_gpu.py
+# Batch rank all target stocks
+python rank_stocks.py
+python rank_stocks.py --top 5 --months 84
 ```
 
 ### 20.2 Data Format
@@ -1066,19 +1097,18 @@ yfinance produces this format automatically.
 
 ### TP/SL inconsistency between model scripts and RL environment
 **Wrong**: model scripts use `0.6 * return_std * price` for SL and `1.0 * return_std * price` for TP, while the RL environment uses different multipliers. The agent learns to hit a TP defined differently from what the models use.
-**Right**: all model scripts and the RL `TradingEnv.step()` use `SL = 1.5 * ATR_14`, `TP = 2.0 * ATR_14`. ATR_14 captures intraday gap risk that return-std misses and is the industry-standard measure for position sizing. The TP/SL multipliers exist in two places in agent_trader.py (TradingEnv.step() and get_current_action()) -- both must match.
+**Right**: all model scripts and the RL `TradingEnv.step()` use `SL = 1.0 * ATR_14`, `TP = 1.5 * ATR_14`. ATR_14 captures intraday gap risk that return-std misses and is the industry-standard measure for position sizing. The TP/SL multipliers exist in two places in agent_trader.py (TradingEnv.step() and get_current_action()) -- both must match.
 
-### RL agent misses the two strongest models
-**Wrong**: `load_model_predictions()` only loads `.pkl` files. LSTM and TFT save `.keras` files with custom layers -- trying to load them the same way would require importing Keras + custom objects at agent startup.
-**Right**: LSTM and TFT write `lstm_signal.txt` / `tft_signal.txt` at the end of their training runs. The RL agent reads these files. The state vector grows from 12 to 16 dims to include both.
+### RL agent loads all 7 models via pkl files
+**Right**: `load_model_predictions()` loads all 7 `.pkl` model files directly. Each model saves a pkl + scaler + features.txt triplet during training. The RL agent reads these and runs them in walk-forward fashion to generate out-of-sample signals. No special file handling is needed -- every model uses the same pkl interface.
 
 ### Static per-model confidence (test accuracy) in RL state
 **Wrong**: using `test_acc * 100` as the `prob` fed into the RL state for every single episode. This is a one-time number that never changes -- the agent can't distinguish high-confidence from low-confidence signals.
-**Right**: use per-trade probabilities where available (ensemble_prob from trade_probability_analyzer for LSTM/TFT) and move magnitude scaling for tree models. Each row in the training data then has a different prob, which is what the RL agent needs to learn from.
+**Right**: use per-trade direction probabilities derived from each model's predicted return magnitude. Each row in the training data has a different prob, which is what the RL agent needs to learn from.
 
 ### Fixed signal threshold ignores asset volatility
 **Wrong**: `if expected_move_pct > 0.5:` -- a 0.5% threshold means TSLA (3% daily vol) generates signals on nearly every day while JNJ (0.5% daily vol) generates very few.
-**Right**: `sig_threshold = max(0.3 * vol_20d_pct, 0.3)`. The threshold scales with each asset's own volatility so signal frequency is consistent across tickers.
+**Right**: `sig_threshold = max(0.15 * vol_20d_pct, 0.1)`. The threshold scales with each asset's own volatility so signal frequency is consistent across tickers.
 
 ### Feature multicollinearity in tree models (max-2-per-family rule)
 **Wrong**: including RSI_7, RSI_14, RSI_21 in the same model. All three carry essentially the same signal -- fast/slow RSI. The tree wastes splits arbitrating between them.
@@ -1133,13 +1163,21 @@ A correct 5-day call can still get stopped out on day 2 by intra-week noise.
 feedback, SL/TP are achievable in a single session. Live performance improved
 after reverting to 1-day.
 
-### Why 6 models instead of more?
+### Why 7 models instead of more?
 
-We tested 8 models (adding AdaBoost + CatBoost) but winrate dropped. Adding weak
-models **dilutes consensus**: 4/8 agreement is less meaningful than 4/6. Only add
-models that meet a minimum accuracy bar (~50%+ direction F1). AdaBoost with stumps
-(depth=1) was useless on financial data (0% F1). CatBoost had a severe bearish bias
-(0% UP predictions). Both were removed.
+The current 7 models are: XGBoost (light + heavy), LightGBM (light + heavy),
+RandomForest (light + heavy), and CatBoost-Bayes (hybrid LSTM+BO). We tested
+AdaBoost and vanilla CatBoost but they underperformed (AdaBoost with stumps got
+0% F1 on financial data; CatBoost had severe bearish bias with 0% UP predictions).
+Adding weak models **dilutes consensus**: 4/9 agreement is less meaningful than
+4/7. Only add models that meet a minimum accuracy bar (~50%+ direction F1).
+
+### Why were AdaBoost and vanilla CatBoost removed?
+
+They are NOT in the repo as standalone scripts. AdaBoost with decision stumps
+(depth=1) was useless on financial data (0% F1). CatBoost had a severe bearish
+bias (0% UP predictions). The only CatBoost variant that survived is
+`train_catboost_bayes.py` which uses LSTM features + Bayesian optimization.
 
 ### Why was KNN removed?
 
@@ -1163,22 +1201,22 @@ the mean. Predicting `pct_change(3).shift(-3)*100` (3-day % return) makes the
 target scale-invariant. MAE dropped from $18 to $3 — 6× improvement in price
 prediction accuracy.
 
-### Why TP=2.05, SL=1.5? Why must TP > SL?
+### Why TP=1.5, SL=1.0? Why must TP > SL?
 
-**TP must be bigger than SL** — non-negotiable for positive risk/reward. TP=2.05,
-SL=1.5 gives 1.37:1 ratio (break-even 42.3%). We tested TP=1.5 (symmetric, 50%
-break-even), TP=1.75, TP=1.9, TP=2.1, and TP=2.5. TP=2.05 was chosen because:
-- 2.5: 44% of trades timeout (TP too far)
-- 1.5: symmetric, no edge
-- 2.05: balances achievability (fewer timeouts) with reward (TP > SL)
+**TP must be bigger than SL** — non-negotiable for positive risk/reward. TP=1.5,
+SL=1.0 gives 1.5:1 ratio (break-even 40%). We tested symmetric (1.0/1.0 = 50%
+break-even, no edge) and wider ratios. 1.5/1.0 was chosen because:
+- 1.0 ATR SL: tight enough to cut losers fast, wide enough for normal noise
+- 1.5 ATR TP: achievable in a single session for most stocks
+- 1.5:1 risk/reward: winning trade pays for 1.5 losing trades
 
 ### Why can't we hit 60% winrate consistently?
 
-The 6 models have ~50-55% individual direction accuracy. Even with perfect
+The 7 models have ~50-55% individual direction accuracy. Even with perfect
 agreement filtering, the consensus accuracy is limited by correlated model
 errors. Getting above ~57% requires individual model accuracy of 58%+, which
 is extremely difficult for single-stock prediction. The system compensates
-with **asymmetric rewards** — wins pay more than losses cost (1.37:1 ratio)
+with **asymmetric rewards** — wins pay more than losses cost (1.5:1 ratio)
 — so profit factor stays healthy even at moderate winrates. Some stocks hit
 55%+ (TSLA: 56.8%), others don't — it depends on how predictable each ticker is.
 
@@ -1196,7 +1234,7 @@ python main.py --ticker AAPL --current-price 312.50
 
 - **Voting fallback** (removed): When PPO training was poor, the agent used simple
   model voting. This was worse than PPO — confidence was always 50% with split votes.
-- **EV filter** (replaced): Only trade when P(win)×1.37 > P(loss)×1.0. Failed
+- **EV filter** (replaced): Only trade when P(win)×1.5 > P(loss)×1.0. Failed
   because model probabilities are uncalibrated (always ~50%).
 - **Multi-tier consensus** (current): Grades trades by how many models agree.
   Calibrated by actual winrate per agreement level. Simple, robust, effective.
@@ -1213,13 +1251,15 @@ adds pattern-recognition context that raw indicators miss. Unlike our old
 standalone LSTM (45.8% accuracy), this LSTM doesn't need to be right — it just
 needs to provide useful temporal features for CatBoost to learn from.
 
-### What about AdaBoost and CatBoost — are they permanently gone?
+### What about AdaBoost and vanilla CatBoost — are they permanently gone?
 
-They exist in the repo (`train_adaboost.py`, `train_catboost.py`) with updated
-3-day targets and TP=2.05, ready to use. They're just not in the default pipeline.
-AdaBoost needs max_depth >= 3 (not stumps) and CatBoost needs proper calibration
-to fix its bearish bias. If you can get either to 52%+ F1, add them back.
+They were removed from the repo entirely after underperforming. AdaBoost with
+decision stumps got 0% F1 on financial data. Vanilla CatBoost had severe bearish
+bias (0% UP predictions). The only CatBoost variant that survived is the
+LSTM-BO-CatBoost hybrid (`train_catboost_bayes.py`) which uses Bayesian
+optimization and LSTM features to overcome these issues. If you want to
+experiment, add a new model script that meets the ~50%+ direction F1 bar.
 
 ---
 
-*The best way to learn this is to change one component at a time and observe the effect. Start with the consensus threshold (try 3/6, 4/6, 5/6), then try adding AdaBoost back with depth=3, then try tuning the regime filter thresholds.*
+*The best way to learn this is to change one component at a time and observe the effect. Start with the consensus threshold (try 3/7, 4/7, 5/7), then try tuning the regime filter thresholds, then try adding a new model type.*

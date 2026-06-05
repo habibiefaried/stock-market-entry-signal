@@ -131,6 +131,7 @@ FEATURES = [c for c in [
 # ===========================================================================
 
 def run_catboost_bayes(csv_file, n_trials=30):
+    global FEATURES
     print("=" * 60)
     print("BAYESIAN-OPTIMIZED CATBOOST (BO-CatBoost)")
     print("=" * 60)
@@ -236,7 +237,7 @@ def run_catboost_bayes(csv_file, n_trials=30):
         sc = sc2
         test = test2
         df = df_aligned
-        print(f"  Added 4 LSTM features → {len(FEATURES)} total features")
+        print(f"  Added 4 LSTM features -> {len(FEATURES)} total features")
 
         # Clean up keras model to free memory
         del lstm_model

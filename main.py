@@ -1,8 +1,9 @@
 """
 Main script to train all models and generate comparison report
 
-This script runs all 3 prediction models (LSTM, XGBoost, LightGBM) in parallel
-and generates a comprehensive HTML report comparing their performance and trading signals.
+This script runs all 7 prediction models (XGBoost, LightGBM, RandomForest in light/heavy
+variants, plus CatBoost-Bayes) in parallel and generates a comprehensive HTML report
+comparing their performance and trading signals.
 
 Usage:
     # Fetch data and train models
@@ -82,7 +83,7 @@ def run_model(model_name, script_name, csv_file):
     Run a single model training script and capture output
 
     Args:
-        model_name (str): Display name of the model (e.g., "ARIMA")
+        model_name (str): Display name of the model (e.g., "XGBoost")
         script_name (str): Python script filename (e.g., "train_arima.py")
         csv_file (str): Path to CSV data file
 
@@ -1413,13 +1414,13 @@ def generate_html_report(results, csv_file, output_file, agent_result=None):
         html.append("5. **Combine with fundamentals:** Models only use price data, add fundamental analysis\n")
 
     html.append("### Model Comparison:\n")
-    html.append("- **LSTM:** CNN-1D feature extraction + stacked LSTM + temporal attention")
-    html.append("- **TFT:** CNN-1D + Gated Residual Networks + LSTM encoder + Multi-Head Attention")
-    html.append("- **XGBoost:** Gradient boosting, 5 OHLCV features, fast baseline")
-    html.append("- **XGBoost-Heavy:** XGBoost with 70+ features (52 indicators + lags), 3000 trees, lr=0.005")
-    html.append("- **LightGBM:** Leaf-wise gradient boosting, 5 OHLCV features, fast baseline")
-    html.append("- **LightGBM-Heavy:** LightGBM with 70+ features (52 indicators + lags), 3000 trees, lr=0.005, num_leaves=63")
-    html.append("- **RandomForest:** Ensemble of decision trees, walk-forward validation, robust\n")
+    html.append("- **XGBoost:** Gradient boosting, 5 OHLCV features + lags, 2000 trees, fast baseline")
+    html.append("- **XGBoost-Heavy:** XGBoost with ~50 indicators + lags, 5000 trees, lr=0.005")
+    html.append("- **LightGBM:** Leaf-wise gradient boosting, 5 OHLCV features + lags, 2000 trees, fast baseline")
+    html.append("- **LightGBM-Heavy:** LightGBM with ~50 indicators + lags, 5000 trees, lr=0.005, num_leaves=63")
+    html.append("- **RandomForest:** Ensemble of 1000 trees, 5-fold walk-forward validation")
+    html.append("- **RandomForest-Heavy:** RF with 1500 trees, depth 20, 50% bootstrap, 7-fold walk-forward")
+    html.append("- **CatBoost-Bayes:** LSTM feature generator + Bayesian-optimized CatBoost (Sun and Tian 2023)\n")
 
     html.append("</div>")  # Close content div
 
@@ -1464,13 +1465,14 @@ Examples:
 
 This will:
   1. Fetch stock data (if --ticker provided) or use existing CSV
-  2. Run all 7 models in parallel (LSTM, TFT, XGBoost, XGBoost-Heavy, LightGBM, LightGBM-Heavy, RandomForest)
+  2. Run all 7 models in parallel (XGBoost, XGBoost-Heavy, LightGBM, LightGBM-Heavy,
+     RandomForest, RandomForest-Heavy, CatBoost-Bayes)
   3. Run the PPO RL meta-agent (reads all 7 model outputs)
   4. Generate plots for each model
   5. Create a comprehensive HTML report: RESULT-{TICKER}-{DATE}.html
 
-Default: 132 months (11 years) of historical data.
-  8 years is the recommended minimum -- it covers at least one full bull/bear/recovery cycle,
+Default: 84 months (7 years) of historical data.
+  7 years is the recommended minimum -- it covers at least one full bull/bear/recovery cycle,
   which is critical for the RL agent to learn generalised entry rules rather than
   memorising a single regime.
         '''
