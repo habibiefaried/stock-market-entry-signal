@@ -301,16 +301,20 @@ def run_catboost_bayes(csv_file, n_trials=30):
 
     tr_dir_act = (y_tr > 0).astype(int); tr_dir_pr = (tr_pred > 0).astype(int)
     te_dir_act = (y_te > 0).astype(int); te_dir_pr = (te_pred > 0).astype(int)
-    te_acc = accuracy_score(te_dir_act, te_dir_pr)
-    te_f1 = f1_score(te_dir_act, te_dir_pr, zero_division=0)
+    te_acc  = accuracy_score(te_dir_act, te_dir_pr)
+    te_prec = precision_score(te_dir_act, te_dir_pr, zero_division=0)
+    te_rec  = recall_score(te_dir_act, te_dir_pr, zero_division=0)
+    te_f1   = f1_score(te_dir_act, te_dir_pr, zero_division=0)
 
     print(f"\n{'='*60}")
     print("BO-CATBOOST RESULTS")
     print("="*60)
-    print(f"Test MAE:      ${te_mae:.2f}")
-    print(f"Test RMSE:     ${te_rmse:.2f}")
-    print(f"Test Accuracy: {te_acc*100:.2f}%")
-    print(f"Test F1:       {te_f1*100:.2f}%")
+    print(f"Test MAE:       ${te_mae:.2f}")
+    print(f"Test RMSE:      ${te_rmse:.2f}")
+    print(f"Test Accuracy:  {te_acc*100:.2f}%")
+    print(f"Test Precision: {te_prec*100:.2f}%")
+    print(f"Test Recall:    {te_rec*100:.2f}%")
+    print(f"Test F1-Score:  {te_f1*100:.2f}%")
 
     # Signal
     today_price = float(df['Close'].iloc[-1])
@@ -338,9 +342,22 @@ def run_catboost_bayes(csv_file, n_trials=30):
     else: sl=today_price-sl_dist; tp=today_price+tp_dist
 
     emoji = "[BUY]" if signal_int==1 else ("[SHORT]" if signal_int==-1 else "[HOLD]")
+    expected_move = tomorrow_price - today_price
+    confidence = te_acc * 100
+
     print(f"\n{emoji} SIGNAL: {signal}")
-    print(f"Price: ${today_price:.2f} | Pred: ${tomorrow_price:.2f} | Move: {expected_move_pct:+.2f}%")
-    print(f"SL: ${sl:.2f} ({((sl-today_price)/today_price*100):+.2f}%) | TP: ${tp:.2f} ({((tp-today_price)/today_price*100):+.2f}%)")
+    print(f"\nCurrent Price (Today):      ${today_price:.2f}")
+    print(f"Predicted Price (Tomorrow): ${tomorrow_price:.2f}")
+    print(f"Expected Move:              ${expected_move:+.2f} ({expected_move_pct:+.2f}%)")
+    print(f"\nRisk Management (Stock Price Levels):")
+    print(f"  Stop Loss:     ${sl:.2f} ({((sl-today_price)/today_price*100):+.2f}%)")
+    print(f"  Take Profit:   ${tp:.2f} ({((tp-today_price)/today_price*100):+.2f}%)")
+    print(f"\n5x Leverage Position P&L (for IQ Option auto-close):")
+    print(f"  Stop Loss %:   {((sl-today_price)/today_price*100*5):+.1f}%")
+    print(f"  Take Profit %: {((tp-today_price)/today_price*100*5):+.1f}%")
+    print(f"  Risk/Reward:   1.5:1")
+    print(f"\nModel Confidence: {confidence:.1f}% (based on test accuracy)")
+    print(f"Recent Volatility: ${volatility:.2f} per day")
 
     # Probability analysis
     print("\n" + "="*70)
@@ -389,6 +406,8 @@ def run_catboost_bayes(csv_file, n_trials=30):
         f.write(f"test_mae: {te_mae}\n")
         f.write(f"test_rmse: {te_rmse}\n")
         f.write(f"test_accuracy: {te_acc}\n")
+        f.write(f"test_precision: {te_prec}\n")
+        f.write(f"test_recall: {te_rec}\n")
         f.write(f"test_f1: {te_f1}\n")
         f.write(f"timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
