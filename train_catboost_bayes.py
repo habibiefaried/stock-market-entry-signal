@@ -249,11 +249,38 @@ def run_catboost_bayes(csv_file, n_trials=30):
     print(f"SL: ${sl:.2f} ({((sl-today_price)/today_price*100):+.2f}%) | TP: ${tp:.2f} ({((tp-today_price)/today_price*100):+.2f}%)")
 
     # Probability analysis
+    print("\n" + "="*70)
+    print("Running Multi-Approach Win Probability Analysis...")
+    print("="*70)
     mc = monte_carlo_simulation(today_price, sl, tp, volatility, expected_move_pct)
     pat = find_similar_patterns(df, today_price, sl, tp)
     ens = calculate_ensemble_probability(None, mc, pat)
+    report = format_analysis_report(None, mc, pat, ens, signal, today_price, sl, tp)
+    print(report)
     if ens:
-        print(f"Ensemble Probability: {ens['ensemble_probability']:.1f}% [{ens['confidence_level']}]")
+        print(f"ENSEMBLE_PROBABILITY: {ens['ensemble_probability']:.1f}%")
+        print(f"CONFIDENCE_LEVEL: {ens['confidence_level']}")
+        print(f"RECOMMENDATION: {ens['recommendation']}")
+
+    # Plots
+    import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
+    fi = pd.DataFrame({'feature': FEATURES, 'importance': model.get_feature_importance()
+        }).sort_values('importance', ascending=False)
+    plt.figure(figsize=(12, 8)); top = fi.head(20)
+    plt.barh(range(len(top)), top['importance']); plt.yticks(range(len(top)), top['feature'])
+    plt.xlabel('Importance'); plt.title('BO-CatBoost: Feature Importance (Top 20)')
+    plt.gca().invert_yaxis(); plt.tight_layout()
+    plt.savefig('catboost_bayes_feature_importance.png', dpi=150, bbox_inches='tight'); plt.close()
+
+    plot_n = min(200, len(y_te))
+    plt.figure(figsize=(15, 6))
+    plt.plot(range(plot_n), y_te_pr[-plot_n:], label='Actual', color='blue', linewidth=2)
+    plt.plot(range(plot_n), te_pred_pr[-plot_n:], label='Predicted', color='red', linewidth=2, alpha=0.7)
+    plt.title('BO-CatBoost: Actual vs Predicted (Last 200 Test Samples)')
+    plt.xlabel('Test Sample'); plt.ylabel('Price ($)'); plt.legend(); plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig('catboost_bayes_predictions.png', dpi=150, bbox_inches='tight'); plt.close()
+    print("Plots saved: catboost_bayes_feature_importance.png, catboost_bayes_predictions.png")
 
     # Save
     joblib.dump(model, os.path.join(base_dir, 'catboost_bayes_model.pkl'))
