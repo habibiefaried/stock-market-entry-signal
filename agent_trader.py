@@ -263,6 +263,7 @@ def load_model_predictions(csv_file):
         'lightgbm_heavy': ('lightgbm_heavy_model.pkl', 'lightgbm_heavy_scaler.pkl', 'lightgbm_heavy_features.txt'),
         'randomforest':        ('randomforest_model.pkl',        'randomforest_scaler.pkl',        'randomforest_features.txt'),
         'randomforest_heavy':  ('randomforest_heavy_model.pkl',  'randomforest_heavy_scaler.pkl',  'randomforest_heavy_features.txt'),
+        'catboost_bayes':      ('catboost_bayes_model.pkl',      'catboost_bayes_scaler.pkl',      'catboost_bayes_features.txt'),
     }
 
     loaded_models = {}
@@ -457,9 +458,9 @@ def _synthetic_signals(df_raw):
         vol  = df_raw['Volatility'].iloc[i]
         tr   = df_raw['Trend'].iloc[i]
 
-        # 6 synthetic model proxies with slight random noise
+        # 7 synthetic model proxies with slight random noise
         np.random.seed(i)
-        noise = np.random.normal(0, 0.05, 6)
+        noise = np.random.normal(0, 0.05, 7)
 
         def _sig(score):
             if score > 0.1:  return 1
@@ -476,10 +477,11 @@ def _synthetic_signals(df_raw):
             (rsi - 50) / 50 * 0.7 + tr + noise[3],
             macd / (abs(macd) + 1e-5) * 0.3 + tr * 0.5 + noise[4],
             tr * 1.5 + (rsi - 50) / 50 * 0.4 + noise[5],
+            (rsi - 50) / 50 * 0.6 + tr * 0.8 + noise[6],
         ]
 
         names = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy',
-                 'randomforest', 'randomforest_heavy']
+                 'randomforest', 'randomforest_heavy', 'catboost_bayes']
         row   = {
             'date':              df_raw['Date'].iloc[i] if 'Date' in df_raw.columns else i,
             'close':             df_raw['Close'].iloc[i],
@@ -514,7 +516,7 @@ def _synthetic_signals(df_raw):
 # ---------------------------------------------------------------------------
 
 MODEL_NAMES = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy',
-               'randomforest', 'randomforest_heavy']
+               'randomforest', 'randomforest_heavy', 'catboost_bayes']
 
 def build_state(row):
     """
@@ -622,7 +624,7 @@ def build_state(row):
     return state_array
 
 
-STATE_DIM  = 31   # state: 6 models×2 + 15 market + 4 new indicators (ADX,CHOP,AO,DPO)
+STATE_DIM  = 33   # state: 7 models×2 + 15 market + 4 new indicators (ADX,CHOP,AO,DPO)
 ACTION_DIM = 3    # LONG, SHORT, HOLD
 
 
