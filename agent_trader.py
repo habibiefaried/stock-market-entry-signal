@@ -292,9 +292,9 @@ def load_model_predictions(csv_file):
         print("  No pkl models found - using synthetic signal generation for demonstration")
         return _synthetic_signals(df_raw)
 
-    # Walk-forward: for each day in the test window, predict next-day direction
+    # Walk-forward: models trained on 90/10 split, so only last 10% is out-of-sample
     n        = len(df_raw)
-    warmup   = max(200, int(n * 0.6))   # first 60% used for warmup (already trained)
+    warmup   = max(200, int(n * 0.9))   # first 90% = training region for pkl models
     records  = []
 
     for i in range(warmup, n - 1):
@@ -334,7 +334,7 @@ def load_model_predictions(csv_file):
                     prob = min(0.5 + abs(move) / 5, 0.95)
                 elif move < -0.1:
                     sig  = -1
-                    prob = min(0.5 + abs(move) / 10, 0.95)
+                    prob = min(0.5 + abs(move) / 5, 0.95)
                 else:
                     sig  = 0
                     prob = 0.5
@@ -400,12 +400,13 @@ def _build_feature_row(df, idx, feats):
                     row_data[f] = [0.0]
                 continue
 
-            # ---- Volatility: Volatility_Xd (dollar std for light models, matches training) ----
+            # ---- Volatility: Volatility_Xd (return-based for heavy models, dollar for light) ----
             m = re.match(r'Volatility_(\d+)d', f)
             if m:
                 period = int(m.group(1))
                 if idx >= period:
-                    row_data[f] = [float(close.rolling(period).std().iloc[idx])]
+                    # Use return-based std*100 (matches heavy model training scripts)
+                    row_data[f] = [float(close.pct_change().rolling(period).std().iloc[idx] * 100)]
                 else:
                     row_data[f] = [0.0]
                 continue
@@ -515,9 +516,10 @@ MODEL_NAMES = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy',
 
 def build_state(row):
     """
-    Enhanced state vector (27 dims):
+    Enhanced state vector (31 dims):
       6 model signals    (encoded: LONG=1, SHORT=-1, HOLD=0)
       6 model probs      (0..1, uses per-trade ensemble prob where available)
+      + 4 new indicators (ADX, Choppiness, AO, DPO)
       RSI_14 normalised  (-1..1 mapped from 0..100)
       RSI_7  normalised  (-1..1 mapped from 0..100, shorter-term momentum)
       Trend              (already a ratio)
@@ -1218,12 +1220,12 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False, current_pri
     else:
         action, prob, _ = policy.act_greedy(state)
 
-    # ATR-based SL/TP (consistent with training environment and model scripts)
+    # ATR-based SL/TP — MUST match TradingEnv.step() and all training scripts
     csv_close = float(last_row['close'])
     close = float(current_price) if current_price is not None else csv_close
     atr     = max(float(last_row.get('atr', 0.0)), 0.01 * close)
-    sl_dist = 1.5 * atr
-    tp_dist = 2.05 * atr
+    sl_dist = 1.0 * atr
+    tp_dist = 1.5 * atr
 
     # Multi-tier consensus: more agreement = trade, less = skip or scale down
     position_size = 1.0  # default: full size (voting path or 5-6/6 consensus)

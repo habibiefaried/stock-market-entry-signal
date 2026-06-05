@@ -146,7 +146,7 @@ def run_adaboost(csv_file, n_estimators=500, learning_rate=0.05, max_depth=3):
         raise ValueError("CSV missing OHLCV columns")
 
     df = compute_indicators(df)
-    df['Target'] = df['Close'].pct_change(3).shift(-3) * 100  # 3-day forward return
+    df['Target'] = df['Close'].pct_change().shift(-1) * 100  # 1-day forward return
     df = df.dropna().reset_index(drop=True)
 
     print(f"Records: {len(df)}  Features: {len(FEATURES)}")

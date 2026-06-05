@@ -137,7 +137,7 @@ def create_lag_features(df, feature_cols):
         df_lagged[f'Close_lag_{lag}'] = df['Close'].shift(lag)
     for lag in [1, 5]:
         df_lagged[f'Volume_lag_{lag}'] = df['Volume'].shift(lag)
-    df_lagged['Target'] = df['Close'].pct_change(3).shift(-3) * 100  # 3-day forward return
+    df_lagged['Target'] = df['Close'].pct_change().shift(-1) * 100  # 1-day forward return
     df_lagged = df_lagged.dropna().reset_index(drop=True)
     all_features = [c for c in df_lagged.columns
                     if c not in ['Date', 'Target']]

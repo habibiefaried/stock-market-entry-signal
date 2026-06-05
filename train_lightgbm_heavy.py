@@ -326,7 +326,7 @@ def train_lightgbm_heavy_model(
             X_train_scaled, y_train,
             eval_set=[(X_train_scaled, y_train), (X_test_scaled, y_test)],
             eval_names=['train', 'test'],
-            callbacks=[lgb.log_evaluation(period=100)],
+            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(period=100)],
         )
         _using_gpu = True
         print("Using GPU acceleration (CUDA)")
@@ -337,7 +337,7 @@ def train_lightgbm_heavy_model(
             X_train_scaled, y_train,
             eval_set=[(X_train_scaled, y_train), (X_test_scaled, y_test)],
             eval_names=['train', 'test'],
-            callbacks=[lgb.log_evaluation(period=100)],
+            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(period=100)],
         )
 
     print("\nMaking predictions...")

@@ -109,7 +109,7 @@ def main():
     lines.append("=" * 70)
     lines.append("STOCK RANKING — MOST CONFIDENT TO LEAST CONFIDENT")
     lines.append(f"Generated: {now}  |  Data: {args.months} months")
-    lines.append(f"TP=1.5 ATR  |  SL=1.0 ATR  |  Ratio 1.5:1  |  Break-even 40%")
+    lines.append(f"TP=1.5 ATR  |  SL=1.0 ATR  |  Ratio 1.5:1  |  Break-even 40%  |  Production SL/TP match training")
     lines.append("=" * 70)
     lines.append("")
     lines.append(f"{'#':>3s}  {'Ticker':<8s} {'Action':>6s} {'Conf':>7s} {'WinRate':>8s} {'PF':>7s} {'SL%':>7s} {'TP%':>7s} {'Trades':>7s} {'Entry':>10s}")

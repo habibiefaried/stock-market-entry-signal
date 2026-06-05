@@ -323,7 +323,7 @@ def train_lightgbm_model(csv_file, n_estimators=2000, learning_rate=0.01, num_le
             X_train_scaled, y_train,
             eval_set=[(X_train_scaled, y_train), (X_test_scaled, y_test)],
             eval_names=['train', 'test'],
-            callbacks=[lgb.log_evaluation(period=50)],
+            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(period=100)],
         )
         _using_gpu = True
         print("Using GPU acceleration (CUDA)")
@@ -334,7 +334,7 @@ def train_lightgbm_model(csv_file, n_estimators=2000, learning_rate=0.01, num_le
             X_train_scaled, y_train,
             eval_set=[(X_train_scaled, y_train), (X_test_scaled, y_test)],
             eval_names=['train', 'test'],
-            callbacks=[lgb.log_evaluation(period=50)],
+            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(period=100)],
         )
 
     # Make predictions (returns in %)

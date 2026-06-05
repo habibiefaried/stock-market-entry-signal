@@ -1529,7 +1529,7 @@ Default: 132 months (11 years) of historical data.
     # Run all models in parallel using ThreadPoolExecutor
     results = []
 
-    with ThreadPoolExecutor(max_workers=7) as executor:
+    with ThreadPoolExecutor(max_workers=6) as executor:
         # Submit all tasks
         future_to_model = {
             executor.submit(run_model, name, script, csv_file): name
