@@ -50,6 +50,7 @@ from trade_probability_analyzer import (
     calculate_ensemble_probability,
     format_analysis_report
 )
+from model_store import save_model, save_text, get_prefix, ensure_model_dir
 
 
 # ============================================================================
@@ -543,10 +544,10 @@ def train_lightgbm_heavy_model(
     print("="*60)
 
     # Save
-    joblib.dump(model,  'lightgbm_heavy_model.pkl')
-    joblib.dump(scaler, 'lightgbm_heavy_scaler.pkl')
-    with open('lightgbm_heavy_features.txt', 'w') as f:
-        f.write('\n'.join(all_features))
+    prefix = get_prefix(csv_file)
+    save_model(prefix, 'lightgbm_heavy_model.pkl', model)
+    save_model(prefix, 'lightgbm_heavy_scaler.pkl', scaler)
+    save_text(prefix, 'lightgbm_heavy_features.txt', all_features)
 
     ticker = os.path.basename(csv_file).split('_')[0]
     model_info = {
@@ -565,12 +566,10 @@ def train_lightgbm_heavy_model(
         'test_f1':        test_f1,
         'timestamp':      datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
     }
-    with open('lightgbm_heavy_model_info.txt', 'w') as f:
-        for k, v in model_info.items():
-            f.write(f"{k}: {v}\n")
+    save_text(prefix, 'lightgbm_heavy_model_info.txt',
+              [f"{k}: {v}" for k, v in model_info.items()])
 
-    print("\nModel saved as: lightgbm_heavy_model.pkl")
-    print("Scaler saved as: lightgbm_heavy_scaler.pkl")
+    print(f"\nModel saved to MODELS/ with prefix: {prefix}")
     return model, scaler, model_info
 
 

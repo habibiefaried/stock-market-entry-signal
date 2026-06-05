@@ -1622,10 +1622,10 @@ def _cleanup(report_file, csv_file, ticker, date_str):
     if png_moved:
         print(f"Moved {png_moved} plots to REPORT/")
 
-    # Delete intermediate files
+    # Delete intermediate files (model artefacts now live in MODELS/)
     patterns = [
-        '*.pkl', '*.keras', '*.npz', '*.pt',
-        '*_hash.txt', '*_signal.txt', '*_model_info.txt', '*_features.txt',
+        '*.keras', '*.npz', '*.pt',
+        '*_hash.txt', '*_signal.txt',
     ]
     deleted = 0
     for pattern in patterns:
@@ -1635,6 +1635,12 @@ def _cleanup(report_file, csv_file, ticker, date_str):
                 deleted += 1
             except OSError:
                 pass
+
+    # Clean up old pkl files for THIS ticker in MODELS/ (keep only today's)
+    from model_store import cleanup_old_stock_files
+    removed = cleanup_old_stock_files(ticker, keep_date=date_str)
+    if removed:
+        print(f"Removed {removed} old model file(s) for {ticker} from MODELS/")
 
     # Delete the CSV data file used for this run
     if os.path.exists(csv_file):

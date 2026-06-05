@@ -28,6 +28,7 @@ logging.getLogger('matplotlib').setLevel(logging.ERROR)
 logging.getLogger('optuna').setLevel(logging.WARNING)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from model_store import save_model, save_text, get_prefix, ensure_model_dir
 from trade_probability_analyzer import (
     predict_multi_day_path, monte_carlo_simulation,
     find_similar_patterns, calculate_ensemble_probability,
@@ -394,24 +395,25 @@ def run_catboost_bayes(csv_file, n_trials=30):
     print("Plots saved: catboost_bayes_feature_importance.png, catboost_bayes_predictions.png")
 
     # Save
-    joblib.dump(model, os.path.join(base_dir, 'catboost_bayes_model.pkl'))
-    joblib.dump(sc, os.path.join(base_dir, 'catboost_bayes_scaler.pkl'))
-    with open(os.path.join(base_dir, 'catboost_bayes_features.txt'), 'w') as f:
-        f.write('\n'.join(FEATURES))
-    info_path = os.path.join(base_dir, 'catboost_bayes_model_info.txt')
-    with open(info_path, 'w') as f:
-        f.write(f"ticker: {os.path.basename(csv_file).split('_')[0]}\n")
-        f.write(f"model_type: BO-CatBoost (Bayesian optimized)\n")
-        f.write(f"best_params: {best}\n")
-        f.write(f"test_mae: {te_mae}\n")
-        f.write(f"test_rmse: {te_rmse}\n")
-        f.write(f"test_accuracy: {te_acc}\n")
-        f.write(f"test_precision: {te_prec}\n")
-        f.write(f"test_recall: {te_rec}\n")
-        f.write(f"test_f1: {te_f1}\n")
-        f.write(f"timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    prefix = get_prefix(csv_file)
+    save_model(prefix, 'catboost_bayes_model.pkl', model)
+    save_model(prefix, 'catboost_bayes_scaler.pkl', sc)
+    save_text(prefix, 'catboost_bayes_features.txt', FEATURES)
+    info_lines = [
+        f"ticker: {os.path.basename(csv_file).split('_')[0]}",
+        f"model_type: BO-CatBoost (Bayesian optimized)",
+        f"best_params: {best}",
+        f"test_mae: {te_mae}",
+        f"test_rmse: {te_rmse}",
+        f"test_accuracy: {te_acc}",
+        f"test_precision: {te_prec}",
+        f"test_recall: {te_rec}",
+        f"test_f1: {te_f1}",
+        f"timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+    ]
+    save_text(prefix, 'catboost_bayes_model_info.txt', info_lines)
 
-    print(f"\nModel saved.")
+    print(f"\nModel saved to MODELS/ with prefix: {prefix}")
     print("=" * 60)
 
 

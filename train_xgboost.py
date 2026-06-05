@@ -38,6 +38,7 @@ from trade_probability_analyzer import (
     calculate_ensemble_probability,
     format_analysis_report
 )
+from model_store import save_model, save_text, get_prefix, ensure_model_dir
 
 def load_and_prepare_data(csv_file):
     """
@@ -532,12 +533,10 @@ def train_xgboost_model(csv_file, n_estimators=2000, learning_rate=0.01, max_dep
     print("="*60)
 
     # Save model
-    joblib.dump(model, 'xgboost_model.pkl')
-    joblib.dump(scaler, 'xgboost_scaler.pkl')
-
-    # Save feature names
-    with open('xgboost_features.txt', 'w') as f:
-        f.write('\n'.join(all_features))
+    prefix = get_prefix(csv_file)
+    save_model(prefix, 'xgboost_model.pkl', model)
+    save_model(prefix, 'xgboost_scaler.pkl', scaler)
+    save_text(prefix, 'xgboost_features.txt', all_features)
 
     # Save model info
     ticker = os.path.basename(csv_file).split('_')[0]
@@ -557,14 +556,10 @@ def train_xgboost_model(csv_file, n_estimators=2000, learning_rate=0.01, max_dep
     }
 
     # Save model info to file
-    with open('xgboost_model_info.txt', 'w') as f:
-        for key, value in model_info.items():
-            f.write(f"{key}: {value}\n")
+    save_text(prefix, 'xgboost_model_info.txt',
+              [f"{k}: {v}" for k, v in model_info.items()])
 
-    print("\nModel saved as: xgboost_model.pkl")
-    print("Scaler saved as: xgboost_scaler.pkl")
-    print("Features saved as: xgboost_features.txt")
-    print("Model info saved as: xgboost_model_info.txt")
+    print(f"\nModel saved to MODELS/ with prefix: {prefix}")
 
     return model, scaler, model_info
 

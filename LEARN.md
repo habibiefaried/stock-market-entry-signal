@@ -1024,6 +1024,8 @@ The report is built as a list of strings, then joined and written to disk. The R
 | `train_catboost_bayes.py` | LSTM feature generator + Bayesian-optimized CatBoost (Sun & Tian 2023) | `catboost_bayes_model.pkl` + scaler + features |
 | `agent_trader.py` | PPO RL meta-agent: reads 7 model pkl files, 33-dim state, consensus + regime filters | `rl_agent_torch.pt` or `rl_agent_weights.npz` (warm-start) |
 | `trade_probability_analyzer.py` | Three-approach win probability analysis, called by all model scripts | (no file output — returns results) |
+| `recount.py` | Live trading prediction: loads saved models from MODELS/, predicts direction + TP/SL at current price | (stdout only) |
+| `model_store.py` | Shared helpers for MODELS/ file naming (`<TICKER>_<YYYYMMDD>_<name>.ext`) | (no file output) |
 
 ### 20.1 How to Run
 
@@ -1048,6 +1050,10 @@ python agent_trader.py MSFT_daily_data_20260524.csv
 # Batch rank all target stocks
 python rank_stocks.py
 python rank_stocks.py --top 5 --months 84
+
+# Live recount: predict using pre-trained models + current price
+python recount.py --ticker MSFT --current-price 441.31
+python recount.py --ticker MSFT --current-price 441.31 --leverage 5
 ```
 
 ### 20.2 Data Format

@@ -45,6 +45,7 @@ from trade_probability_analyzer import (
     calculate_ensemble_probability,
     format_analysis_report
 )
+from model_store import save_model, save_text, get_prefix, ensure_model_dir
 
 def load_and_prepare_data(csv_file):
     """
@@ -571,12 +572,10 @@ def train_lightgbm_model(csv_file, n_estimators=2000, learning_rate=0.01, num_le
     print("="*60)
 
     # Save model
-    joblib.dump(model, 'lightgbm_model.pkl')
-    joblib.dump(scaler, 'lightgbm_scaler.pkl')
-
-    # Save feature names
-    with open('lightgbm_features.txt', 'w') as f:
-        f.write('\n'.join(all_features))
+    prefix = get_prefix(csv_file)
+    save_model(prefix, 'lightgbm_model.pkl', model)
+    save_model(prefix, 'lightgbm_scaler.pkl', scaler)
+    save_text(prefix, 'lightgbm_features.txt', all_features)
 
     # Save model info
     ticker = os.path.basename(csv_file).split('_')[0]
@@ -596,14 +595,10 @@ def train_lightgbm_model(csv_file, n_estimators=2000, learning_rate=0.01, num_le
     }
 
     # Save model info to file
-    with open('lightgbm_model_info.txt', 'w') as f:
-        for key, value in model_info.items():
-            f.write(f"{key}: {value}\n")
+    save_text(prefix, 'lightgbm_model_info.txt',
+              [f"{k}: {v}" for k, v in model_info.items()])
 
-    print("\nModel saved as: lightgbm_model.pkl")
-    print("Scaler saved as: lightgbm_scaler.pkl")
-    print("Features saved as: lightgbm_features.txt")
-    print("Model info saved as: lightgbm_model_info.txt")
+    print(f"\nModel saved to MODELS/ with prefix: {prefix}")
 
     return model, scaler, model_info
 

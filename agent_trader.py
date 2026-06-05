@@ -255,22 +255,32 @@ def load_model_predictions(csv_file):
     df_raw = compute_indicators(df_raw).reset_index(drop=True)
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
+    ticker = os.path.basename(csv_file).split('_')[0]
+
+    # Import model_store for MODELS/ path resolution
+    from model_store import MODEL_DIR, find_latest_prefix
+    prefix, _ = find_latest_prefix(ticker)
+    if prefix is None:
+        print(f"  No trained models found for {ticker} in MODELS/")
+        return _synthetic_signals(df_raw)
+
+    model_dir = MODEL_DIR
 
     model_files = {
-        'xgboost':        ('xgboost_model.pkl',        'xgboost_scaler.pkl',        'xgboost_features.txt'),
-        'xgboost_heavy':  ('xgboost_heavy_model.pkl',  'xgboost_heavy_scaler.pkl',  'xgboost_heavy_features.txt'),
-        'lightgbm':       ('lightgbm_model.pkl',        'lightgbm_scaler.pkl',       'lightgbm_features.txt'),
-        'lightgbm_heavy': ('lightgbm_heavy_model.pkl', 'lightgbm_heavy_scaler.pkl', 'lightgbm_heavy_features.txt'),
-        'randomforest':        ('randomforest_model.pkl',        'randomforest_scaler.pkl',        'randomforest_features.txt'),
-        'randomforest_heavy':  ('randomforest_heavy_model.pkl',  'randomforest_heavy_scaler.pkl',  'randomforest_heavy_features.txt'),
-        'catboost_bayes':      ('catboost_bayes_model.pkl',      'catboost_bayes_scaler.pkl',      'catboost_bayes_features.txt'),
+        'xgboost':        (f'{prefix}xgboost_model.pkl',        f'{prefix}xgboost_scaler.pkl',        f'{prefix}xgboost_features.txt'),
+        'xgboost_heavy':  (f'{prefix}xgboost_heavy_model.pkl',  f'{prefix}xgboost_heavy_scaler.pkl',  f'{prefix}xgboost_heavy_features.txt'),
+        'lightgbm':       (f'{prefix}lightgbm_model.pkl',        f'{prefix}lightgbm_scaler.pkl',       f'{prefix}lightgbm_features.txt'),
+        'lightgbm_heavy': (f'{prefix}lightgbm_heavy_model.pkl', f'{prefix}lightgbm_heavy_scaler.pkl', f'{prefix}lightgbm_heavy_features.txt'),
+        'randomforest':        (f'{prefix}randomforest_model.pkl',        f'{prefix}randomforest_scaler.pkl',        f'{prefix}randomforest_features.txt'),
+        'randomforest_heavy':  (f'{prefix}randomforest_heavy_model.pkl',  f'{prefix}randomforest_heavy_scaler.pkl',  f'{prefix}randomforest_heavy_features.txt'),
+        'catboost_bayes':      (f'{prefix}catboost_bayes_model.pkl',      f'{prefix}catboost_bayes_scaler.pkl',      f'{prefix}catboost_bayes_features.txt'),
     }
 
     loaded_models = {}
     for name, (mf, sf, ff) in model_files.items():
-        mp = os.path.join(base_dir, mf)
-        sp = os.path.join(base_dir, sf)
-        fp = os.path.join(base_dir, ff)
+        mp = os.path.join(model_dir, mf)
+        sp = os.path.join(model_dir, sf)
+        fp = os.path.join(model_dir, ff)
         if os.path.exists(mp) and os.path.exists(sp) and os.path.exists(fp):
             try:
                 mdl    = joblib.load(mp)
@@ -1335,17 +1345,19 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
     np.random.seed(42)
 
     # Use PyTorch if available (3x better performance)
+    from model_store import MODEL_DIR, ensure_model_dir
+    ensure_model_dir()
     if TORCH_AVAILABLE:
         print("  Using PyTorch PPO (improved gradients)")
         torch.manual_seed(42)
         policy = PPOPolicyTorch(state_dim=STATE_DIM, hidden=128, lr=5e-5)
-        weights_file = os.path.join(base_dir, 'rl_agent_torch.pt')
-        csv_hash_file = os.path.join(base_dir, 'rl_agent_torch_hash.txt')
+        weights_file = os.path.join(MODEL_DIR, f'{ticker}_rl_agent_torch.pt')
+        csv_hash_file = os.path.join(MODEL_DIR, f'{ticker}_rl_agent_torch_hash.txt')
     else:
         print("  Using NumPy PPO (install torch for better performance)")
         policy = PPOPolicy(state_dim=STATE_DIM)
-        weights_file = os.path.join(base_dir, 'rl_agent_weights.npz')
-        csv_hash_file = os.path.join(base_dir, 'rl_agent_csv_hash.txt')
+        weights_file = os.path.join(MODEL_DIR, f'{ticker}_rl_agent_weights.npz')
+        csv_hash_file = os.path.join(MODEL_DIR, f'{ticker}_rl_agent_csv_hash.txt')
 
     train_env = TradingEnv(train_sig, train_la)
 

@@ -34,6 +34,7 @@ warnings.filterwarnings('ignore')
 logging.getLogger('matplotlib').setLevel(logging.ERROR)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from model_store import save_model, save_text, get_prefix, ensure_model_dir
 from trade_probability_analyzer import (
     predict_multi_day_path,
     monte_carlo_simulation,
@@ -386,32 +387,34 @@ def run_randomforest_heavy(
         print(f"RECOMMENDATION: {ensemble['recommendation']}")
 
     # ---- Save ----
-    joblib.dump(final_model, os.path.join(base_dir, 'randomforest_heavy_model.pkl'))
-    joblib.dump(sc_final, os.path.join(base_dir, 'randomforest_heavy_scaler.pkl'))
-    with open(os.path.join(base_dir, 'randomforest_heavy_features.txt'), 'w') as f:
-        f.write('\n'.join(final_features))
-    with open(os.path.join(base_dir, 'randomforest_heavy_model_info.txt'), 'w') as f:
-        f.write(f"ticker: {os.path.basename(csv_file).split('_')[0]}\n")
-        f.write(f"model_type: RandomForest-Heavy (38 indicators + walk-forward)\n")
-        f.write(f"n_features: {len(final_features)}\n")
-        f.write(f"n_estimators: {n_estimators}\n")
-        f.write(f"max_depth: {max_depth}\n")
-        f.write(f"max_features: {max_features}\n")
-        f.write(f"min_samples_split: {min_samples_split}\n")
-        f.write(f"min_samples_leaf: {min_samples_leaf}\n")
-        f.write(f"max_samples: {max_samples}\n")
-        f.write(f"max_leaf_nodes: {max_leaf_nodes}\n")
-        f.write(f"train_size: {len(all_train_actuals)}\n")
-        f.write(f"test_size: {len(all_test_actuals)}\n")
-        f.write(f"test_mae: {test_mae}\n")
-        f.write(f"test_rmse: {test_rmse}\n")
-        f.write(f"test_accuracy: {test_acc}\n")
-        f.write(f"test_precision: {test_prec}\n")
-        f.write(f"test_recall: {test_rec}\n")
-        f.write(f"test_f1: {test_f1}\n")
-        f.write(f"timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    prefix = get_prefix(csv_file)
+    save_model(prefix, 'randomforest_heavy_model.pkl', final_model)
+    save_model(prefix, 'randomforest_heavy_scaler.pkl', sc_final)
+    save_text(prefix, 'randomforest_heavy_features.txt', final_features)
+    info_lines = [
+        f"ticker: {os.path.basename(csv_file).split('_')[0]}",
+        f"model_type: RandomForest-Heavy (38 indicators + walk-forward)",
+        f"n_features: {len(final_features)}",
+        f"n_estimators: {n_estimators}",
+        f"max_depth: {max_depth}",
+        f"max_features: {max_features}",
+        f"min_samples_split: {min_samples_split}",
+        f"min_samples_leaf: {min_samples_leaf}",
+        f"max_samples: {max_samples}",
+        f"max_leaf_nodes: {max_leaf_nodes}",
+        f"train_size: {len(all_train_actuals)}",
+        f"test_size: {len(all_test_actuals)}",
+        f"test_mae: {test_mae}",
+        f"test_rmse: {test_rmse}",
+        f"test_accuracy: {test_acc}",
+        f"test_precision: {test_prec}",
+        f"test_recall: {test_rec}",
+        f"test_f1: {test_f1}",
+        f"timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+    ]
+    save_text(prefix, 'randomforest_heavy_model_info.txt', info_lines)
 
-    print(f"\nModel saved.")
+    print(f"\nModel saved to MODELS/ with prefix: {prefix}")
     print("=" * 60)
     print("RANDOMFOREST-HEAVY COMPLETE")
     print("=" * 60)

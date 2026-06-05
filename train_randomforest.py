@@ -44,6 +44,7 @@ from trade_probability_analyzer import (
     calculate_ensemble_probability,
     format_analysis_report
 )
+from model_store import save_model, save_text, get_prefix, ensure_model_dir
 
 def load_and_prepare_data(csv_file):
     """
@@ -550,37 +551,32 @@ def train_randomforest_model(csv_file, n_estimators=1000, max_depth=15, max_feat
     print("="*60)
 
     # Save model
-    model_filename = 'randomforest_model.pkl'
-    scaler_filename = 'randomforest_scaler.pkl'
-    features_filename = 'randomforest_features.txt'
-    info_filename = 'randomforest_model_info.txt'
+    prefix = get_prefix(csv_file)
+    save_model(prefix, 'randomforest_model.pkl', final_model)
+    save_model(prefix, 'randomforest_scaler.pkl', scaler_final)
+    save_text(prefix, 'randomforest_features.txt', final_features)
 
-    joblib.dump(final_model, model_filename)
-    joblib.dump(scaler_final, scaler_filename)
+    info_lines = [
+        f"Random Forest Model Information",
+        f"{'='*50}",
+        f"Training Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Data Source: {csv_file}",
+        f"Validation Method: Walk-Forward (5 folds)",
+        f"",
+        f"Hyperparameters:",
+        f"  n_estimators: {n_estimators}",
+        f"  max_depth: {max_depth}",
+        f"  max_features: sqrt",
+        f"  Number of features: {len(final_features)}",
+        f"",
+        f"Performance:",
+        f"  Test MAE: ${test_mae:.2f}",
+        f"  Test RMSE: ${test_rmse:.2f}",
+        f"  Test Accuracy: {test_acc*100:.2f}%",
+    ]
+    save_text(prefix, 'randomforest_model_info.txt', info_lines)
 
-    with open(features_filename, 'w') as f:
-        f.write('\n'.join(final_features))
-
-    with open(info_filename, 'w') as f:
-        f.write(f"Random Forest Model Information\n")
-        f.write(f"="*50 + "\n")
-        f.write(f"Training Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Data Source: {csv_file}\n")
-        f.write(f"Validation Method: Walk-Forward (5 folds)\n")
-        f.write(f"\nHyperparameters:\n")
-        f.write(f"  n_estimators: {n_estimators}\n")
-        f.write(f"  max_depth: {max_depth}\n")
-        f.write(f"  max_features: sqrt\n")
-        f.write(f"  Number of features: {len(final_features)}\n")
-        f.write(f"\nPerformance:\n")
-        f.write(f"  Test MAE: ${test_mae:.2f}\n")
-        f.write(f"  Test RMSE: ${test_rmse:.2f}\n")
-        f.write(f"  Test Accuracy: {test_acc*100:.2f}%\n")
-
-    print(f"\nModel saved as: {model_filename}")
-    print(f"Scaler saved as: {scaler_filename}")
-    print(f"Features saved as: {features_filename}")
-    print(f"Model info saved as: {info_filename}")
+    print(f"\nModel saved to MODELS/ with prefix: {prefix}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train Random Forest model with walk-forward validation')
