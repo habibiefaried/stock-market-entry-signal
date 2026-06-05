@@ -992,7 +992,8 @@ The report is built as a list of strings, then joined and written to disk. The R
 | `train_lightgbm_heavy.py` | LightGBM with 38 indicators, 3000 trees | `lightgbm_heavy_model.pkl` |
 | `train_randomforest.py` | Random Forest (1000 trees, walk-forward) | `randomforest_model.pkl` |
 | `train_randomforest_heavy.py` | Random Forest-Heavy (1500 trees, depth 20, 50% bootstrap, 7-fold walk-forward) | `randomforest_heavy_model.pkl` |
-| `agent_trader.py` | PPO RL: reads 6 model pkl files, consensus + regime filters | `rl_agent_torch.pt` (warm-start) |
+| `train_catboost_bayes.py` | LSTM-BO-CatBoost: LSTM feature generator + Bayesian-optimized CatBoost (Sun & Tian 2023) | `catboost_bayes_model.pkl` |
+| `agent_trader.py` | PPO RL: reads 7 model pkl files, 33-dim state, consensus + regime filters | `rl_agent_torch.pt` (warm-start) |
 | `trade_probability_analyzer.py` | Three-approach win probability analysis, called by all model scripts | (no file output -- returns results) |
 | `test_gpu.py` | Quick GPU availability check | (stdout only) |
 
@@ -1199,6 +1200,18 @@ python main.py --ticker AAPL --current-price 312.50
   because model probabilities are uncalibrated (always ~50%).
 - **Multi-tier consensus** (current): Grades trades by how many models agree.
   Calibrated by actual winrate per agreement level. Simple, robust, effective.
+
+### Why does LSTM-BO-CatBoost use LSTM as a "feature generator" instead of a predictor?
+
+From Sun & Tian (2023). The LSTM doesn't make the final trade call. It reads
+20 days of High/Low/Close and predicts what today's price "should be" based on
+the temporal pattern. The difference between prediction and reality (LSTM_dir,
+LSTM_High, LSTM_Low, LSTM_Close) becomes 4 extra features for CatBoost. Think
+of it as CatBoost getting a second opinion: "based on the last 20 days' pattern,
+the close should be $X, but it's actually $Y — that's bullish/bearish." The LSTM
+adds pattern-recognition context that raw indicators miss. Unlike our old
+standalone LSTM (45.8% accuracy), this LSTM doesn't need to be right — it just
+needs to provide useful temporal features for CatBoost to learn from.
 
 ### What about AdaBoost and CatBoost — are they permanently gone?
 

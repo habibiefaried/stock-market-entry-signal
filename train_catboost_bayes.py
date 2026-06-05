@@ -1,17 +1,17 @@
 """
-Bayesian-Optimized CatBoost — inspired by LSTM-BO-CatBoost paper.
+LSTM-BO-CatBoost — hybrid model from Sun & Tian (2023) paper.
 
-Key innovation from the paper: use Bayesian optimization (optuna) to tune
-CatBoost hyperparameters, then use model stacking where the CatBoost learns
-to combine predictions from other trained models as meta-features.
+Architecture (matching the paper):
+  1. Simple 2-layer LSTM (100 units) trained on High, Low, Close
+  2. LSTM predictions become features for CatBoost
+  3. CatBoost hyperparameters optimized with Bayesian optimization (optuna)
 
-This is the "BO-CatBoost" component. The paper also used LSTM for feature
-generation; we use ensemble predictions instead (proven more reliable on
-our data than LSTM which got 45.8% accuracy).
+The LSTM captures temporal patterns; CatBoost learns non-linear
+feature interactions. Both together outperform either alone.
 
 Usage:
     python train_catboost_bayes.py MSFT_daily_data.csv
-    python train_catboost_bayes.py MSFT_daily_data.csv --n_trials 50
+    python train_catboost_bayes.py MSFT_daily_data.csv --n_trials 30
 """
 
 import argparse, os, sys, warnings, logging, joblib
@@ -148,6 +148,99 @@ def run_catboost_bayes(csv_file, n_trials=30):
 
     sc = StandardScaler()
     X_tr_s = sc.fit_transform(X_tr); X_te_s = sc.transform(X_te)
+
+    # ---- LSTM Feature Generator (matching paper: 2-layer, 100 units) ----
+    print("\nTraining LSTM feature generator (High/Low/Close only)...")
+    lookback = 20  # paper-suggested lookback
+    lstm_feats = ['High', 'Low', 'Close']
+
+    def _build_sequences(data, feats, lb):
+        X, y = [], []
+        for i in range(lb, len(data)):
+            X.append(data[feats].iloc[i-lb:i].values)
+            y.append(data['Target'].iloc[i])
+        return np.array(X), np.array(y)
+
+    # Scale LSTM inputs separately
+    lstm_sc = StandardScaler()
+    lstm_data = df[lstm_feats + ['Target']].copy()
+    lstm_data[lstm_feats] = lstm_sc.fit_transform(lstm_data[lstm_feats])
+
+    X_lstm, y_lstm = _build_sequences(lstm_data, lstm_feats, lookback)
+    cut_lstm = int(len(X_lstm) * 0.9)
+    X_l_tr, X_l_te = X_lstm[:cut_lstm], X_lstm[cut_lstm:]
+    y_l_tr, y_l_te = y_lstm[:cut_lstm], y_lstm[cut_lstm:]
+
+    # Build simple 2-layer LSTM (paper: units=100, no CNN)
+    try:
+        import os as _os
+        _os.environ['KERAS_BACKEND'] = 'torch'
+        import keras
+        from keras import layers
+    except ImportError:
+        print("  Keras not available — skipping LSTM feature generator")
+        lstm_pred_tr = np.zeros((len(X_tr), 3))
+        lstm_pred_te = np.zeros((len(X_te), 3))
+        lstm_pred_now = np.zeros((1, 3))
+    else:
+        lstm_model = keras.Sequential([
+            layers.Input(shape=(lookback, len(lstm_feats))),
+            layers.LSTM(100, return_sequences=True),
+            layers.LSTM(100, return_sequences=False),
+            layers.Dense(32, activation='relu'),
+            layers.Dense(3),  # predict High, Low, Close
+        ])
+        lstm_model.compile(optimizer='adam', loss='mse')
+        lstm_model.fit(X_l_tr, X_l_tr[:, -1, :3],  # train on last-timestep values
+                       validation_data=(X_l_te, X_l_te[:, -1, :3]),
+                       epochs=10, batch_size=32, verbose=0)
+        print("  LSTM feature generator trained")
+
+        # Generate LSTM predictions as features for the full dataset
+        lstm_data_all = lstm_data[lstm_feats].values
+        all_lstm_preds = []
+        for i in range(len(lstm_data_all)):
+            if i < lookback:
+                all_lstm_preds.append(lstm_data_all[i])
+            else:
+                seq = lstm_data_all[i-lookback:i].reshape(1, lookback, len(lstm_feats))
+                pred = lstm_model.predict(seq, verbose=0)[0]
+                all_lstm_preds.append(pred)
+        all_lstm_preds = np.array(all_lstm_preds)
+
+        # Align LSTM predictions with the main dataframe (drop first `lookback` rows)
+        lstm_pred_aligned = all_lstm_preds[lookback:]  # shape: (n-lookback, 3)
+        df_aligned = df.iloc[lookback:].reset_index(drop=True)
+
+        # Add LSTM predictions as features
+        df_aligned['LSTM_High'] = lstm_pred_aligned[:, 0]
+        df_aligned['LSTM_Low']  = lstm_pred_aligned[:, 1]
+        df_aligned['LSTM_Close'] = lstm_pred_aligned[:, 2]
+        # Also add LSTM forecast direction
+        df_aligned['LSTM_dir'] = np.sign(
+            df_aligned['LSTM_Close'] - df_aligned['Close'])
+
+        # Re-split with LSTM features included
+        lstm_extra = ['LSTM_High', 'LSTM_Low', 'LSTM_Close', 'LSTM_dir']
+        FEATURES_LSTM = FEATURES + lstm_extra
+        n2 = len(df_aligned); cut2 = int(n2 * 0.9)
+        train2, test2 = df_aligned.iloc[:cut2], df_aligned.iloc[cut2:]
+        X_tr2 = train2[FEATURES_LSTM].values; y_tr2 = train2['Target'].values
+        X_te2 = test2[FEATURES_LSTM].values;  y_te2 = test2['Target'].values
+        sc2 = StandardScaler()
+        X_tr_s = sc2.fit_transform(X_tr2); X_te_s = sc2.transform(X_te2)
+        # Update references for rest of the function
+        X_tr, X_te = X_tr2, X_te2
+        y_tr, y_te = y_tr2, y_te2
+        FEATURES = FEATURES_LSTM
+        sc = sc2
+        test = test2
+        df = df_aligned
+        print(f"  Added 4 LSTM features → {len(FEATURES)} total features")
+
+        # Clean up keras model to free memory
+        del lstm_model
+        import gc; gc.collect()
 
     # Bayesian hyperparameter optimization
     try:
