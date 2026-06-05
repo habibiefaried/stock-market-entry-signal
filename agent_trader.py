@@ -292,9 +292,11 @@ def load_model_predictions(csv_file):
         print("  No pkl models found - using synthetic signal generation for demonstration")
         return _synthetic_signals(df_raw)
 
-    # Walk-forward: models trained on 90/10 split, so only last 10% is out-of-sample
+    # Walk-forward: models trained on 90/10 split. Use 80% warmup for
+    # pragmatic balance — mainly out-of-sample with enough RL training data.
     n        = len(df_raw)
-    warmup   = max(200, int(n * 0.9))   # first 90% = training region for pkl models
+    warmup   = max(200, int(n * 0.8))
+    records  = []
     records  = []
 
     for i in range(warmup, n - 1):
@@ -689,7 +691,7 @@ if TORCH_AVAILABLE:
             return action.item(), probs[action].item(), value.item()
 
         def update(self, states, actions, old_log_probs, returns, advantages,
-                   clip_eps=0.2, entropy_coef=0.02, value_coef=0.5, n_epochs=15):
+                   clip_eps=0.2, entropy_coef=0.02, value_coef=0.5, n_epochs=20):
             """Proper PPO update with backpropagation"""
             states = torch.FloatTensor(np.array(states))
             actions = torch.LongTensor(actions)
@@ -1334,7 +1336,7 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
     if TORCH_AVAILABLE:
         print("  Using PyTorch PPO (improved gradients)")
         torch.manual_seed(42)
-        policy = PPOPolicyTorch(state_dim=STATE_DIM, hidden=128, lr=1e-4)
+        policy = PPOPolicyTorch(state_dim=STATE_DIM, hidden=128, lr=5e-5)
         weights_file = os.path.join(base_dir, 'rl_agent_torch.pt')
         csv_hash_file = os.path.join(base_dir, 'rl_agent_torch_hash.txt')
     else:
@@ -1367,11 +1369,10 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
         except Exception as e:
             print(f"  Could not load saved weights: {e}")
 
-    # Use more episodes for PyTorch (better gradients handle more data)
     if TORCH_AVAILABLE:
-        n_ep = min(max(len(train_sig) * 30, 15000), 150000)
+        n_ep = max(len(train_sig) * 60, 40000)   # minimum 40K episodes
     else:
-        n_ep = min(max(len(train_sig) * 20, 12000), 100000)
+        n_ep = max(len(train_sig) * 40, 25000)
 
     est_sec = max(1, n_ep // 7500)
     print(f"  Episodes planned: {n_ep}  (estimated time: ~{est_sec}-{est_sec*2} seconds)")
