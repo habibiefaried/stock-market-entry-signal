@@ -54,6 +54,64 @@ MODELS/                     →  persists trained pkl/scaler/features for recoun
 model_store.py              →  shared path helpers for MODELS/ naming
 ```
 
+## recount.py — Live Trading Prediction
+
+`recount.py` uses **already-trained models** from `MODELS/` to generate a fresh
+BUY/SHORT/HOLD decision at the current market price without re-training.
+
+**Why recount?** The CSV data is lagged (yesterday's close), but as a trader you
+know the current live price. recount loads all 7 saved models + the RL agent policy,
+fetches the last 12 months of data for indicator computation, runs every model on
+the latest row, and feeds their signals into the RL agent — all using the live price
+for entry/TP/SL while keeping model predictions strictly from historical features
+(no look-ahead).
+
+**Workflow:**
+1. Verify `MODELS/` has a complete model set for the requested ticker
+2. Fetch recent data (default 12 months) and compute 50+ indicators
+3. Load all 7 pkl models + scalers + feature lists
+4. Predict next-day return from each model → signal (BUY/SHORT/HOLD) + probability
+5. Build 33-dim RL state vector and run PPO policy (or voting fallback)
+6. Apply multi-tier consensus filter with regime check
+7. Calculate TP/SL at the live current price, show 5x leverage P&L
+
+**Usage:**
+```bash
+# Requires models already trained for this ticker
+python recount.py --ticker MSFT --current-price 441.31
+python recount.py --ticker MSFT --current-price 441.31 --leverage 5
+python recount.py --ticker AAPL --current-price 312.50 --leverage 5 --months 6
+
+# If models aren't trained yet, you'll get a clear error:
+# ERROR: No trained models found for 'AAPL' in MODELS/.
+# You must train the models first. Run:
+#   python main.py --ticker AAPL
+```
+
+**Output example:**
+```
+INDIVIDUAL MODEL SIGNALS
+Model                    Signal              Move %    Prob
+xgboost                  SHORT (SELL)        -1.22%   74.5%
+xgboost_heavy            HOLD (No signal)    +0.08%   51.6%
+...
+Consensus                LONG=0 SHORT=3 HOLD=4  (agree=3/7)
+
+RECOUNT DECISION
+  >>> ACTION:  HOLD (AMBER)
+  >>> Confidence: 30.0%
+
+  Entry Price:    $441.31
+  Stop Loss:      $441.31  (+0.00%)
+  Take Profit:    $441.31  (+0.00%)
+
+  --- 5x Leverage Position P&L ---
+  Stop Loss P&L:    +0.0%
+  Take Profit P&L:  +0.0%
+
+  Note: CSV last close was $416.67, current price is $441.31 (+5.91%)
+```
+
 ## Current Configuration
 
 | Parameter | Value | Notes |

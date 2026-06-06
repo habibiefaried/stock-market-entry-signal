@@ -59,7 +59,7 @@ This requires:
 - **Ensemble reasoning** -- no single model is reliable; combine multiple approaches
 - **Meta-agent decision** -- a PPO RL agent reads all model outputs and makes a final LONG/SHORT/HOLD call
 
-The system trains 7 models (XGBoost, XGBoost-Heavy, LightGBM, LightGBM-Heavy, RandomForest, RandomForest-Heavy, CatBoost-Bayes), aggregates their opinions, then passes everything to a PPO reinforcement learning agent that outputs the final trade recommendation.
+The system trains 7 models (XGBoost, XGBoost-Heavy, LightGBM, LightGBM-Heavy, RandomForest, RandomForest-Heavy, CatBoost-Bayes), aggregates their opinions, then passes everything to a PPO reinforcement learning agent that outputs the final trade recommendation. Trained models persist in the `MODELS/` folder so `recount.py` can reload them later for live trading predictions at the current market price without re-training.
 
 The deep learning models (CNN-LSTM, CNN-TFT) were removed from the pipeline
 after extensive testing showed they underperformed tree-based models on this
@@ -1056,7 +1056,69 @@ python recount.py --ticker MSFT --current-price 441.31
 python recount.py --ticker MSFT --current-price 441.31 --leverage 5
 ```
 
-### 20.2 Data Format
+### 20.2 recount.py — Live Trading Prediction
+
+`recount.py` is the bridge between backtesting and live trading. It loads
+already-trained models from `MODELS/` and generates a fresh prediction at the
+current market price without re-training anything.
+
+**Why it exists:** The CSV data used for training always has yesterday's close.
+But in live trading, the market has already moved. You (the trader) know the
+current price. recount takes that current price, uses the models trained on
+historical data, and produces a decision with TP/SL levels at today's price.
+
+**How it works, step by step:**
+
+1. **Verify models exist** — reads `MODELS/` for `<TICKER>_<YYYYMMDD>_*` files.
+   If none found, exits with a clear error telling you to run `main.py --ticker X`
+   first. Also validates the stored ticker matches the requested one.
+
+2. **Fetch recent data** — pulls 12 months of daily OHLCV via yfinance and
+   computes all 50+ indicators (RSI, MACD, BB, ATR, ADX, Choppiness, etc.)
+   using the same `compute_indicators()` as agent_trader.
+
+3. **Load all 7 models** — each model's pkl, scaler, and feature list are loaded
+   from MODELS/. The feature list tells recount exactly which columns each model
+   expects (light models: ~20 OHLCV lags; heavy models: ~49 indicators).
+
+4. **Predict on the latest row** — `_build_feature_row()` constructs a
+   one-row feature matrix for each model matching the exact formulas used during
+   training. Each model predicts the next-day return (%). An adaptive threshold
+   (`max(0.15 * vol_20d, 0.1)`) determines BUY/SHORT/HOLD.
+
+5. **Build RL state** — the 7 model signals + probs + 19 market indicators
+   (RSI, trend, volatility, ATR, MACD, BB, Stoch, Volume ratio, SMA50 distance,
+   regime, ADX, CHOP, AO, DPO) form the 33-dim state vector. `build_state()`
+   is the exact same function agent_trader uses.
+
+6. **Run RL policy** — loads the PyTorch or NumPy policy weights from MODELS/.
+   If no policy exists, falls back to simple model voting. The `act_greedy()`
+   method returns the highest-probability action.
+
+7. **Multi-tier consensus filter** — the same tiered check as agent_trader:
+   - 5-7/7 agreement: full confidence, always trade
+   - 4/7 agreement: requires regime check (no counter-trend at this level)
+   - 3/7 agreement: requires strong regime alignment
+   - <3/7: forced HOLD
+
+8. **Calculate TP/SL at current price** — uses `1.0 * ATR_14` for stop loss,
+   `1.5 * ATR_14` for take profit, computed from the live current price
+   (not the CSV's last close). Shows 5x leverage position P&L and a max
+   safe position size (2% account risk).
+
+**When CSV close differs from current price:** recount prints a note showing
+the gap. This is common — the CSV's last close might be hours or days old
+depending on when you run it. Model signals use historical features (no
+look-ahead), but entry/TP/SL are calculated at the live price you provide.
+
+**Error cases handled:**
+- No models in MODELS/ → "train first" error
+- Wrong ticker → "models trained for X, not Y" error
+- Missing RL policy → voting fallback
+- Missing individual model pkl → skipped with warning
+- Insufficient data → graceful exit
+
+### 20.3 Data Format
 
 The CSV must have these columns (case-sensitive):
 ```
