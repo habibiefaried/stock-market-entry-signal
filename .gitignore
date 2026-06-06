@@ -156,7 +156,6 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-.python-version
 
 # Spyder project settings
 .spyderproject
@@ -229,8 +228,10 @@ __marimo__/
 *.html
 *.bak
 train_arima.py
-*.txt
+stock-ranking-result.txt
 *.npz
 *.pt
 catboost_info/
 !target_stock.txt
+!.python-version
+!requirements.txt
