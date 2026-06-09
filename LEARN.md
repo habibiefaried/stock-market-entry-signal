@@ -752,7 +752,7 @@ Each of the 7 models produces a signal (BUY/SHORT/HOLD) and a TP win probability
 
 ### 18.2 State, Action, Reward
 
-**State vector (33 dimensions):**
+**State vector (34 dimensions):**
 ```
 7 model signals       xgboost, xgboost_heavy, lightgbm, lightgbm_heavy,
                       randomforest, randomforest_heavy, catboost_bayes
@@ -777,10 +777,11 @@ Model agreement       (std of model signals)
 Avg model confidence  (mean of probs)
 Signal consensus      (majority vote direction)
 High confidence count (fraction of models with prob > 0.7)
+Days elapsed          (0..1 over MAX_DAYS — countdown pressure on HOLD)
 ```
 
 The agent sees both **model opinions** (the first 14 dims) and **raw chart context**
-(the next 15 dims) -- just like a trader watching both analyst reports and the charts.
+(the next 20 dims) -- just like a trader watching both analyst reports and the charts.
 
 **Actions:**
 - `LONG (0)`: go long, hold until TP or SL
@@ -789,14 +790,13 @@ The agent sees both **model opinions** (the first 14 dims) and **raw chart conte
 
 **Rewards:**
 ```
-TP hit first  -> +1.5    (matches 1.5×ATR take-profit)
-SL hit first  -> -1.0    (matches 1.0×ATR stop-loss)
-Each day held ->  0.0    (no holding penalty)
-Timeout       -> -0.05   (tiny nudge: prefer trades that resolve)
-Correct dir   -> +0.2    (bonus for matching model consensus)
-Counter-regime -> -0.5 penalty (Section 18.9)
-Regime-aligned -> +0.3 bonus
-Max 15 days   (1-day prediction horizon with generous timeout)
+TP hit first   -> +1.5   (matches 1.5×ATR take-profit)
+SL hit first   -> -1.0   (matches 1.0×ATR stop-loss)
+Each day held  ->  0.0   (no holding penalty)
+Timeout        -> -0.3   (strong nudge: forces decisive entries over 15-day drift)
+Counter-regime -> -0.5 penalty, regime-aligned -> +0.3 bonus (Section 18.9)
+Low-consensus  -> -0.5 penalty (mirrors inference-time hard filter)
+Max 15 days    (1-day prediction horizon with 15-step timeout)
 ```
 
 **TP/SL levels** (consistent across all model scripts and the RL environment):
@@ -813,7 +813,7 @@ Using ATR_14 instead of rolling return-std captures intraday gap risk that retur
 **Why double?** A single walk-forward would use the same data to generate model predictions AND train the RL agent -- giving the agent access to future data it would not have in live trading.
 
 **Layer 1 (in `load_model_predictions`):**
-Load the trained pkl models (XGBoost, LightGBM, etc.) and run them in a walk-forward manner on historical data. The first 90% of rows form the warmup window (matching the 90/10 chronological split used when the GBM models were trained). For the remaining 10%, generate predictions row by row -- each prediction is genuinely out-of-sample. The warmup length is `min(int(n*0.9), max(int(n*0.7), 50))` to remain robust on small datasets.
+Load the trained pkl models (XGBoost, LightGBM, etc.) and run them in a walk-forward manner on historical data. The warmup window is `min(int(n*0.7), max(int(n*0.5), 50))` -- 70% floor at 50% -- leaving more rows as honest out-of-sample signals for RL training while still keeping predictions genuine OOS. For all rows after warmup, predictions are generated row-by-row from already-fitted models.
 
 **Layer 2 (in `train_ppo`):**
 Split those out-of-sample signal rows 80/20. Train the PPO agent on the first 80% of signals. Evaluate (backtest) on the held-out 20%.
@@ -835,7 +835,7 @@ The clip prevents the new policy from deviating too far from the old one in a si
 
 **Advantage** = return - value_estimate. Positive advantage means "this action led to better-than-expected outcome; do it more."
 
-**This implementation:** Auto-detects PyTorch at import time. If available, uses a 2-layer MLP (128 hidden) with LayerNorm + Dropout, Adam optimiser, proper backpropagation, and gradient clipping. Falls back to a pure numpy MLP (64 hidden) with analytical gradients if PyTorch is not installed. The PyTorch version trains ~3x faster and achieves better convergence due to proper autograd.
+**This implementation:** Auto-detects PyTorch at import time. If available, uses a 2-layer MLP (128 hidden) with LayerNorm + Dropout, Adam optimiser, proper backpropagation, and gradient clipping. Falls back to a pure numpy MLP (64 hidden) with full manual backprop (gradients flow through W1/b1 → W2/b2 → W3/b3 and Wv1/bv1 → Wv2/bv2) if PyTorch is not installed. The PyTorch version trains ~3x faster and achieves better convergence due to proper autograd.
 
 **Training scale:** Up to 40k episodes (PyTorch) or 25k (NumPy), scaled proportionally
 to dataset size: `min(n_signals * 200, 40000)` (PyTorch) / `min(n_signals * 150, 25000)` (NumPy),
@@ -928,17 +928,21 @@ accuracy ~50-55%, the ceiling winrate from consensus alone is ~40-57% depending 
 the stock. Getting higher winrate requires stricter trade filtering.
 
 **Strategy — Multi-Tier Consensus Filter**: Instead of a binary trade/skip decision,
-trades are graded by how many models agree:
+trades are graded by how many models agree **in the same direction as the chosen action**.
+The key invariant: count models voting for the specific direction being traded (n_dir),
+not the global maximum across both sides (n_agree). The old n_agree=max(n_long,n_short)
+form allowed trading SHORT when 5 models said LONG and 2 said SHORT -- that is not
+"5 models agree"; it is 5 models disagreeing with you.
 
-| Agreement | Confidence Scale | Regime Check | Rationale |
-|-----------|-----------------|-------------|-----------|
-| 5-7/7 | 100% | Always | Near-unanimous, full send |
+| Models agreeing with action (n_dir) | Confidence Scale | Regime Check | Rationale |
+|--------------------------------------|-----------------|-------------|-----------|
+| 5-7/7 | 100% | Always | Near-unanimous in chosen direction |
 | 4/7 | 85% | Regime > -0.5 (LONG) or < 0.5 (SHORT) | Good agreement, regime-aware |
 | 3/7 | 60% | Regime > 0 (LONG) or < 0 (SHORT) | Must align with trend |
-| <3/7 | SKIP | — | Not enough agreement |
+| <3/7 | SKIP | -- | Not enough directional agreement |
 
-This removes "lone wolf" trades and counter-trend trades that killed live performance.
-Implemented in both `backtest()` and `get_current_action()`.
+This removes "lone wolf" trades and counter-trend trades.
+Implemented consistently in `TradingEnv.step()`, `backtest()`, and `get_current_action()`.
 
 **Results across 10 target stocks (1-day horizon, 7 years data)**:
 
@@ -1031,7 +1035,7 @@ The report is built as a list of strings, then joined and written to disk. The R
 | `train_randomforest.py` | Random Forest (1000 trees, 5-fold walk-forward) | `randomforest_model.pkl` + scaler + features |
 | `train_randomforest_heavy.py` | Random Forest-Heavy (1500 trees, depth 20, 50% bootstrap, 7-fold walk-forward) | `randomforest_heavy_model.pkl` + scaler + features |
 | `train_catboost_bayes.py` | LSTM feature generator + Bayesian-optimized CatBoost (Sun & Tian 2023) | `catboost_bayes_model.pkl` + scaler + features |
-| `agent_trader.py` | PPO RL meta-agent: reads 7 model pkl files, 33-dim state, consensus + regime filters | `{TICKER}_{YYYYMMDD}_rl_agent_torch.pt` or `{TICKER}_{YYYYMMDD}_rl_agent_weights.npz` (warm-start) |
+| `agent_trader.py` | PPO RL meta-agent: reads 7 model pkl files, 34-dim state, consensus + regime filters | `{TICKER}_{YYYYMMDD}_rl_agent_torch.pt` or `{TICKER}_{YYYYMMDD}_rl_agent_weights.npz` (warm-start) |
 | `trade_probability_analyzer.py` | Three-approach win probability analysis, called by all model scripts | (no file output — returns results) |
 | `recount.py` | Live trading prediction: loads saved models from MODELS/, predicts direction + TP/SL at current price | (stdout only) |
 | `model_store.py` | Shared helpers for MODELS/ file naming (`<TICKER>_<YYYYMMDD>_<name>.ext`); `find_latest_rl_weights(ticker)` auto-discovers newest dated RL weight file | (no file output) |
@@ -1095,10 +1099,11 @@ historical data, and produces a decision with TP/SL levels at today's price.
    training. Each model predicts the next-day return (%). An adaptive threshold
    (`max(0.15 * vol_20d, 0.1)`) determines BUY/SHORT/HOLD.
 
-5. **Build RL state** — the 7 model signals + probs + 19 market indicators
-   (RSI, trend, volatility, ATR, MACD, BB, Stoch, Volume ratio, SMA50 distance,
-   regime, ADX, CHOP, AO, DPO) form the 33-dim state vector. `build_state()`
-   is the exact same function agent_trader uses.
+5. **Build RL state** — the 7 model signals + probs + 20 market indicators
+   (RSI_14, RSI_7, trend, volatility, ATR, MACD, BB, Stoch, volume ratio, SMA50 distance,
+   regime, ADX, CHOP, AO, DPO, signal std, mean prob, consensus vote, high-conf fraction,
+   days_in_trade) form the 34-dim state vector. `build_state()` is the exact same
+   function agent_trader uses.
 
 6. **Run RL policy** — loads the PyTorch or NumPy policy weights from MODELS/.
    If no policy exists, falls back to simple model voting. The `act_greedy()`
@@ -1204,6 +1209,20 @@ This ensures the correct `libomp` is resident before PyTorch loads its copy.
 **Wrong**: in `_build_feature_row()`, computing `Price_change_Xd` as `close.pct_change(X).iloc[idx]` — this returns a ratio (e.g. 0.02).
 **Why it fails**: the training scripts compute the same feature as `pct_change() * 100` (percentage, e.g. 2.0). The StandardScaler was fit on ×100 values. Feeding raw ratios at inference means the input is 100× out of distribution — the agent receives a 0.02 where it was trained to expect 2.0, causing systematic wrong predictions.
 **Right**: always multiply by 100 to match training: `float(close.pct_change(X).iloc[idx]) * 100`. Same applies to `Volatility_Xd` features. The ×100 convention is used everywhere in training scripts and must be matched exactly at inference.
+
+### Consensus filter counts global max instead of directional agreement
+**Wrong**: `n_agree = max(n_long, n_short)` then checking `n_agree >= 5`. This passes when 5 models say LONG and the agent chooses SHORT -- 5 models are actively disagreeing with the trade, not agreeing.
+**Why it fails**: the filter is designed to ensure models back the chosen direction. Using the global maximum side conflates "the market is sending a clear signal" with "models back this specific action."
+**Right**: `n_dir = n_long if action == LONG else n_short`. Count only the models that vote in the same direction as the action being taken. Apply all consensus thresholds against n_dir. This is consistent in `TradingEnv.step()`, `backtest()`, and `get_current_action()`.
+
+### NumPy backprop order: compute all gradients before applying any update
+**Wrong**: in `PPOPolicy.update()`, computing `d_h2 = self.W3 @ grad_logits` after `self.W3` has already been updated. The downstream gradient is then computed from the wrong (post-update) weights.
+**Why it fails**: backpropagation requires the chain rule on the *forward-pass* graph. Once a weight has been updated it no longer represents the function that was differentiated. Using modified weights for downstream gradient computation produces corrupted gradients for all earlier layers.
+**Right**: compute all gradients (for all layers in both actor and critic) using the pre-update weights, then apply every update in a second pass. The order within the compute pass is output-to-input; the order within the apply pass does not matter.
+
+### Signal dtype consistency: use int for vote counting
+**Wrong**: storing model signals as `float` in the `signals` list (`sig = float(...)`), then calling `signals.count(1)`. This works by accident because Python `1.0 == 1`, but it silently breaks if a stored value is `0.9999` due to floating-point arithmetic.
+**Right**: store signals as `int` (`sig = int(...)`) and append `float(sig)` to the state array. The int list is used for `count(1)` / `count(-1)` vote tallying; the float conversion is applied only when building the numpy state vector. This convention must be consistent across `build_state()`, `TradingEnv.step()`, `backtest()`, and `get_current_action()`.
 
 ### Feature multicollinearity in tree models (max-2-per-family rule)
 **Wrong**: including RSI_7, RSI_14, RSI_21 in the same model. All three carry essentially the same signal -- fast/slow RSI. The tree wastes splits arbitrating between them.

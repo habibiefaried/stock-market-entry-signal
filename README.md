@@ -4,7 +4,7 @@
 
 **Features:**
 - 7 models (XGBoost, XGBoost-Heavy, LightGBM, LightGBM-Heavy, RandomForest, RF-Heavy, CatBoost-Bayes)
-- PPO RL meta-agent with 33-dim state vector (model signals + chart indicators + regime)
+- PPO RL meta-agent with 34-dim state vector (model signals + chart indicators + regime)
 - Multi-tier consensus filter with regime-aware trade blocking
 - Position sizing by confidence tier
 - Next-day return prediction with walk-forward validation
@@ -47,7 +47,7 @@ main.py                    →  orchestrates   →  REPORT/RESULT-{TICKER}-{DATE
   ├── train_randomforest.py       (1000 trees, 5-fold walk-forward)
   ├── train_randomforest_heavy.py (1500 trees, depth 20, 7-fold walk-forward)
   ├── train_catboost_bayes.py     (LSTM features + Bayesian opt. CatBoost)
-  ├── agent_trader.py             (PPO RL, 33-dim state, consensus filter → {TICKER}_{YYYYMMDD}_rl_agent_torch.pt)
+  ├── agent_trader.py             (PPO RL, 34-dim state, consensus filter → {TICKER}_{YYYYMMDD}_rl_agent_torch.pt)
   └── recount.py                  (live prediction from saved MODELS/)
   
 MODELS/                     →  persists trained pkl/scaler/features for recount.py
@@ -71,7 +71,7 @@ for entry/TP/SL while keeping model predictions strictly from historical feature
 2. Fetch recent data (default 12 months) and compute 50+ indicators
 3. Load all 7 pkl models + scalers + feature lists
 4. Predict next-day return from each model → signal (BUY/SHORT/HOLD) + probability
-5. Build 33-dim RL state vector and run PPO policy (or voting fallback)
+5. Build 34-dim RL state vector and run PPO policy (or voting fallback)
 6. Apply multi-tier consensus filter with regime check
 7. Calculate TP/SL at the live current price, show 5x leverage P&L
 
@@ -123,7 +123,7 @@ RECOUNT DECISION
 | Break-even | 40% | Minimum winrate to profit |
 | Consensus | Multi-tier (3-7/7) | Regime-aware at 4/7, strict at 3/7 |
 | Position size | 100% → 75% → 50% → 0% | By consensus tier |
-| State dim | 33 | 7 models × 2 + 19 indicators |
+| State dim | 34 | 7 models × 2 + 20 indicators |
 
 ## Key Design Decisions
 
@@ -134,4 +134,7 @@ See [LEARN.md](LEARN.md) for the complete study guide including FAQ (Section 23)
 - **Tree models dominate**: standalone LSTM/TFT removed (45.8% accuracy, below coin-flip)
 - **KNN removed**: always predicted ~0% return (market efficiency)
 - **AdaBoost/CatBoost removed**: underperformed; only BO-CatBoost hybrid survived
-- **Return prediction** (not price): scale-invariant target, 6× better MAE
+- **Return prediction** (not price): scale-invariant target, 6x better MAE
+- **NumPy PPO full backprop**: all layer gradients (W1/W2/W3 + value head) are computed from pre-update weights before any weight is modified; corrupted ordering would break hidden-layer learning
+- **Signal dtype**: signals stored as `int` for vote counting, cast to `float` only when appended to the numpy state vector -- prevents silent `float.count()` equality bugs
+- **Directional consensus (n_dir not n_agree)**: consensus filter counts models voting FOR the chosen direction, not the global max across both sides; `n_agree = max(n_long, n_short)` would pass a SHORT trade when 5 models say LONG

@@ -536,7 +536,7 @@ MODEL_NAMES = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy',
 
 def build_state(row, days_in_trade=0):
     """
-    State vector (33 dims):
+    State vector (34 dims):
       7 model signals    (encoded: LONG=1, SHORT=-1, HOLD=0)
       7 model probs      (0..1)
       RSI_14 normalised  (-1..1 mapped from 0..100)
@@ -563,12 +563,12 @@ def build_state(row, days_in_trade=0):
     state = []
 
     # Model signals and probs
-    signals = []
+    signals = []   # int list so .count(1) / .count(-1) are unambiguous
     probs = []
     for name in MODEL_NAMES:
-        sig = float(row.get(f'{name}_signal', 0))
+        sig = int(row.get(f'{name}_signal', 0))
         prob = float(row.get(f'{name}_prob', 0.5))
-        state.append(sig)
+        state.append(float(sig))
         state.append(prob)
         signals.append(sig)
         probs.append(prob)
@@ -641,7 +641,7 @@ def build_state(row, days_in_trade=0):
     return state_array
 
 
-STATE_DIM  = 33   # state: 7×2 signals+probs + 19 market + 4 new indicators + 3 agreement + 1 days
+STATE_DIM  = 34   # state: 7×2 signals+probs + 20 market/indicator features
 ACTION_DIM = 3    # LONG, SHORT, HOLD
 
 
@@ -798,27 +798,43 @@ class PPOPolicy:
 
     def update(self, states, actions, old_log_probs, returns, advantages,
                clip_eps=0.2, entropy_coef=0.02, n_epochs=6):
-        """PPO clipped surrogate update (analytical gradient, no autograd)."""
-        advantages = np.clip(advantages, -2.0, 2.0)  # clip extreme advantages
+        """PPO clipped surrogate update with full backprop through all layers."""
+        advantages = np.clip(advantages, -2.0, 2.0)
         for _ in range(n_epochs):
             for s, a, old_lp, ret, adv in zip(states, actions, old_log_probs,
                                                returns, advantages):
-                probs, value, _, h2, _ = self.forward(s)
+                probs, value, h1, h2, _ = self.forward(s)
 
-                # Policy gradient scaled by clipped advantage
+                grad_scale = self.lr * np.clip(adv, -2.0, 2.0) * 0.15
+
+                # Compute ALL gradients using pre-update weights before modifying anything.
+                # Applying updates before computing downstream gradients corrupts backprop.
+
+                # ----- Policy gradients (pre-update) -----
                 grad_logits = probs.copy()
                 grad_logits[a] -= 1.0
-                grad_scale = self.lr * np.clip(adv, -2.0, 2.0) * 0.15
                 grad_logits *= grad_scale
 
-                self.W3 -= np.outer(h2, grad_logits)
-                self.b3 -= grad_logits
+                d_h2 = (self.W3 @ grad_logits) * (h2 > 0).astype(np.float32)
+                d_h1 = (self.W2 @ d_h2)        * (h1 > 0).astype(np.float32)
 
-                # Value head gradient
-                grad_v = (value - ret) * self.lr * 0.1
+                # ----- Value gradients (pre-update) -----
+                grad_v  = (value - ret) * self.lr * 0.1
                 hv1_fwd = self._relu(s @ self.Wv1 + self.bv1)
+                d_hv1   = (self.Wv2.flatten() * grad_v) * (hv1_fwd > 0).astype(np.float32)
+
+                # ----- Apply all updates -----
+                self.W3  -= np.outer(h2, grad_logits)
+                self.b3  -= grad_logits
+                self.W2  -= np.outer(h1, d_h2)
+                self.b2  -= d_h2
+                self.W1  -= np.outer(s,  d_h1)
+                self.b1  -= d_h1
+
                 self.Wv2 -= np.outer(hv1_fwd, np.array([grad_v]))
                 self.bv2 -= np.array([grad_v])
+                self.Wv1 -= np.outer(s, d_hv1)
+                self.bv1 -= d_hv1
 
 
 # ---------------------------------------------------------------------------
@@ -859,10 +875,9 @@ class TradingEnv:
         tp_dist = 1.5 * atr
 
         # --- Low-consensus penalty (training-time version of the backtest filter) ---
-        signals_raw = [float(row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
+        signals_raw = [int(row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
         n_long  = signals_raw.count(1)
         n_short = signals_raw.count(-1)
-        n_agree = max(n_long, n_short)
         regime  = float(row.get('regime', 0))
 
         if action == ACTION_HOLD:
@@ -871,14 +886,17 @@ class TradingEnv:
             self.state = self._make_state()
             return self.state, REWARD_HOLD, done, {'outcome': 'HOLD', 'days': self.day}
 
+        # n_dir: models that agree WITH the chosen action direction (not just the max side)
+        n_dir = n_long if action == ACTION_LONG else n_short
+
         # Penalise low-consensus entries so the agent learns to skip them,
         # mirroring the hard override applied at inference time.
         consensus_ok = (
-            n_agree >= 5 or
-            (n_agree >= 4 and (
+            n_dir >= 5 or
+            (n_dir >= 4 and (
                 (action == ACTION_LONG  and regime > -0.5) or
                 (action == ACTION_SHORT and regime <  0.5))) or
-            (n_agree >= 3 and (
+            (n_dir >= 3 and (
                 (action == ACTION_LONG  and regime >  0.0) or
                 (action == ACTION_SHORT and regime <  0.0)))
         )
@@ -1093,8 +1111,7 @@ def train_ppo(env, policy, n_episodes=2000, batch_size=128, gamma=0.99):
                               buf_rewards, buf_values)
             except Exception as e:
                 if is_torch:
-                    # If PyTorch update fails, fall back to numpy
-                    print(f"  Warning: PyTorch update failed ({e}), falling back to NumPy")
+                    print(f"  Warning: PyTorch update failed ({e}), stopping training early")
                     return ep_rewards, outcomes
                 else:
                     raise
@@ -1131,14 +1148,14 @@ def backtest(env, policy, n_episodes=None):
             # At backtest/inference we apply it as a hard gate to match live behaviour.
             row = env.signals_df.iloc[env.ep_idx]
             signals_raw = [int(row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
-            n_agree = max(signals_raw.count(1), signals_raw.count(-1))
-            reg     = float(row.get('regime', 0))
+            n_dir = signals_raw.count(1) if action == ACTION_LONG else signals_raw.count(-1)
+            reg   = float(row.get('regime', 0))
             if not (
-                n_agree >= 5 or
-                (n_agree >= 4 and (
+                n_dir >= 5 or
+                (n_dir >= 4 and (
                     (action == ACTION_LONG  and reg > -0.5) or
                     (action == ACTION_SHORT and reg <  0.5))) or
-                (n_agree >= 3 and (
+                (n_dir >= 3 and (
                     (action == ACTION_LONG  and reg >  0.0) or
                     (action == ACTION_SHORT and reg <  0.0)))
             ):
@@ -1264,26 +1281,28 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False, current_pri
     sl_dist = atr
     tp_dist = 1.5 * atr
 
-    # Multi-tier consensus: more agreement = trade, less = skip or scale down
-    position_size = 1.0  # default: full size (voting path or 5-6/6 consensus)
+    # Multi-tier consensus: models agreeing WITH the chosen direction (not just max side)
+    position_size = 1.0
     signals_raw = [int(last_row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
-    n_long  = signals_raw.count(1)
-    n_short = signals_raw.count(-1)
-    n_agree = max(n_long, n_short)
-    regime  = float(last_row.get('regime', 0))
+    n_dir  = signals_raw.count(1) if action == ACTION_LONG else signals_raw.count(-1)
+    regime = float(last_row.get('regime', 0))
 
-    if n_agree >= 5:
-        position_size = 1.0     # strong consensus, always trade
-    elif n_agree >= 4 and (
+    if n_dir >= 5:
+        position_size = 1.0     # strong directional consensus, always trade
+    elif n_dir >= 4 and (
         (action == ACTION_LONG and regime > -0.5) or
         (action == ACTION_SHORT and regime < 0.5)):
-        prob = prob * 0.85; position_size = 0.75   # good consensus, regime-aware
-    elif n_agree >= 3 and (
+        prob = prob * 0.85
+        position_size = 0.75    # good consensus, regime-aware
+    elif n_dir >= 3 and (
         (action == ACTION_LONG and regime > 0) or
         (action == ACTION_SHORT and regime < 0)):
-        prob = prob * 0.6; position_size = 0.5     # marginal, must align with regime
+        prob = prob * 0.6
+        position_size = 0.5     # marginal, must align with regime
     else:
-        action = ACTION_HOLD; prob = 0.3; position_size = 0.0  # skip
+        action = ACTION_HOLD
+        prob = 0.3
+        position_size = 0.0     # not enough directional agreement — skip
 
     if action == ACTION_LONG:
         sl = close - sl_dist
@@ -1522,7 +1541,7 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
 
     # Suggest PyTorch if not available and performance is poor
     if not TORCH_AVAILABLE and (metrics['win_rate'] < 40 or metrics['profit_factor'] < 1.0):
-        print("\n💡 TIP: Install PyTorch for 3x better PPO performance:")
+        print("\nTIP: Install PyTorch for 3x better PPO performance:")
         print("   pip install torch")
         print("   Then re-run this script for improved results")
 
