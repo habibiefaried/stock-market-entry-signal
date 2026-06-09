@@ -308,10 +308,10 @@ def load_model_predictions(csv_file):
         print("  No pkl models found - using synthetic signal generation for demonstration")
         return _synthetic_signals(df_raw)
 
-    # Walk-forward warmup at 70% (floor 50%) so short histories still leave
+    # Walk-forward warmup at 50% so short histories still leave
     # enough signal rows for RL training while keeping predictions out-of-sample.
     n        = len(df_raw)
-    warmup   = min(int(n * 0.7), max(int(n * 0.5), 50))
+    warmup   = max(int(n * 0.5), 50)   # floor 50%, was min(70%, max(50%,50)) — always picked 50%
     records  = []
 
     for i in range(warmup, n - 1):
@@ -709,7 +709,7 @@ if TORCH_AVAILABLE:
             return action.item(), probs[action].item(), value.item()
 
         def update(self, states, actions, old_log_probs, returns, advantages,
-                   clip_eps=0.2, entropy_coef=0.02, value_coef=0.5, n_epochs=20):
+                   clip_eps=0.2, entropy_coef=0.02, value_coef=0.5, n_epochs=8):
             """Proper PPO update with backpropagation"""
             states = torch.FloatTensor(np.array(states))
             actions = torch.LongTensor(actions)
@@ -1443,12 +1443,13 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
             print(f"  Could not load saved weights: {e}")
 
     if TORCH_AVAILABLE:
-        # 200 passes per row, capped at 40K for large datasets, floored at 2K for tiny ones
-        n_ep = max(min(len(train_sig) * 200, 40000), 2000)
+        # ~50 passes per row, capped at 8K (avoids timeout), floored at 1.5K
+        n_ep = max(min(len(train_sig) * 50, 8000), 1500)
     else:
-        n_ep = max(min(len(train_sig) * 150, 25000), 1500)
+        n_ep = max(min(len(train_sig) * 30, 5000), 1000)
 
-    est_sec = max(1, n_ep // 7500)
+    # Realistic estimate: ~150 eps/s on CPU with env stepping + batch backprop
+    est_sec = max(1, n_ep // 150)
     print(f"  Episodes planned: {n_ep}  (estimated time: ~{est_sec}-{est_sec*2} seconds)")
     ep_rewards, outcomes = train_ppo(train_env, policy, n_episodes=n_ep)
     print(f"  Training outcomes: TP={outcomes.get('TP',0)} SL={outcomes.get('SL',0)} "

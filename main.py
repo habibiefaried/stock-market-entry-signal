@@ -433,7 +433,7 @@ def run_agent(csv_file, current_price=None):
             print(f"[RL-Agent] Live price override: ${current_price:.2f}")
         result = subprocess.run(
             cmd,
-            capture_output=True, text=True, timeout=600,
+            capture_output=True, text=True, timeout=1800,
             cwd=os.path.dirname(os.path.abspath(__file__))
         )
         if result.returncode != 0:
