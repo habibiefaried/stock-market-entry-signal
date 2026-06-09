@@ -173,7 +173,6 @@ def compute_indicators(df):
     minus_di = 100 * pd.Series(minus_dm, index=out.index).ewm(span=14, min_periods=14).mean() / (atr14 + 1e-10)
     dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
     out['ADX_14'] = dx.ewm(span=14, min_periods=14).mean()
-    out['PLUS_DI'] = plus_di; out['MINUS_DI'] = minus_di
 
     # Awesome Oscillator: SMA5(mid) - SMA34(mid), measures momentum
     mid = (out['High'] + out['Low']) / 2
@@ -459,7 +458,8 @@ def _build_feature_row(df, idx, feats):
                 row_data[f] = [0.0]
 
         return pd.DataFrame(row_data)[feats]
-    except Exception:
+    except Exception as e:
+        print(f"  Warning: _build_feature_row failed at idx={idx}: {e}")
         return None
 
 
@@ -503,7 +503,7 @@ def _synthetic_signals(df_raw):
             'close':             df_raw['Close'].iloc[i],
             'rsi':               rsi,
             'atr':               df_raw['ATR_14'].iloc[i],
-            'volatility':        vol,
+            'volatility':        df_raw['Volatility'].iloc[i],
             'trend':             tr,
             'macd_hist':         df_raw['MACD_hist'].iloc[i],
             'bb_pct':            df_raw['BB_pct'].iloc[i],
@@ -803,22 +803,11 @@ class PPOPolicy:
         for _ in range(n_epochs):
             for s, a, old_lp, ret, adv in zip(states, actions, old_log_probs,
                                                returns, advantages):
-                probs, value, h1, h2, logits = self.forward(s)
-                lp = np.log(probs[a] + 1e-10)
-                ratio = np.exp(lp - old_lp)
+                probs, value, _, h2, _ = self.forward(s)
 
-                # Clipped surrogate
-                surr1 = ratio * adv
-                surr2 = np.clip(ratio, 1 - clip_eps, 1 + clip_eps) * adv
-                policy_loss = -min(surr1, surr2)
-
-                # Value loss
-                value_loss = 0.5 * (ret - value) ** 2
-
-                # Improved gradient: use advantage sign and magnitude
+                # Policy gradient scaled by clipped advantage
                 grad_logits = probs.copy()
                 grad_logits[a] -= 1.0
-                # Scale by advantage to provide stronger signal
                 grad_scale = self.lr * np.clip(adv, -2.0, 2.0) * 0.15
                 grad_logits *= grad_scale
 
@@ -866,7 +855,7 @@ class TradingEnv:
         row   = self.signals_df.iloc[self.ep_idx]
         close = float(row['close'])
         atr   = max(float(row.get('atr', 0.0)), 0.01 * close)
-        sl_dist = 1.0 * atr
+        sl_dist = atr
         tp_dist = 1.5 * atr
 
         # --- Low-consensus penalty (training-time version of the backtest filter) ---
@@ -1032,11 +1021,12 @@ def build_lookahead(signals_df, df_raw):
 # ---------------------------------------------------------------------------
 
 def compute_returns(rewards, gamma=0.99):
-    returns = []
+    n = len(rewards)
+    returns = [0.0] * n
     R = 0.0
-    for r in reversed(rewards):
-        R = r + gamma * R
-        returns.insert(0, R)
+    for i in range(n - 1, -1, -1):
+        R = rewards[i] + gamma * R
+        returns[i] = R
     return returns
 
 
@@ -1271,7 +1261,7 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False, current_pri
     csv_close = float(last_row['close'])
     close = float(current_price) if current_price is not None else csv_close
     atr     = max(float(last_row.get('atr', 0.0)), 0.01 * close)
-    sl_dist = 1.0 * atr
+    sl_dist = atr
     tp_dist = 1.5 * atr
 
     # Multi-tier consensus: more agreement = trade, less = skip or scale down
@@ -1283,7 +1273,7 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False, current_pri
     regime  = float(last_row.get('regime', 0))
 
     if n_agree >= 5:
-        prob = prob * 1.0; position_size = 1.0     # strong consensus, always trade
+        position_size = 1.0     # strong consensus, always trade
     elif n_agree >= 4 and (
         (action == ACTION_LONG and regime > -0.5) or
         (action == ACTION_SHORT and regime < 0.5)):
