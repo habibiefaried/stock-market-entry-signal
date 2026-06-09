@@ -58,8 +58,7 @@ REWARD_TP    =  1.5    # reward when take profit is hit (TP=1.5 vs SL=1.0 → 1.
 REWARD_SL    = -1.0    # reward when stop loss is hit
 REWARD_HOLD  =  0.0    # no penalty for holding — only hold when truly uncertain
 MAX_DAYS     =  15     # episode horizon (next-day prediction, 15 steps max)
-REWARD_TIMEOUT = -0.05  # tiny nudge: prefer trades that resolve decisively
-REWARD_CORRECT_DIR = 0.2  # bonus for picking direction matching model consensus
+REWARD_TIMEOUT = -0.3   # penalty for unresolved trades: forces decisive entries
 MIN_RECORDS  =  150    # minimum rows needed to run agent (1yr ≈ 200 rows after dropna)
 
 
@@ -315,7 +314,7 @@ def load_model_predictions(csv_file):
     # Cap the warmup floor at 70% of n so short histories (1yr ≈ 200 rows)
     # still leave at least ~20 signal rows for RL training.
     n        = len(df_raw)
-    warmup   = min(int(n * 0.9), max(int(n * 0.7), 50))
+    warmup   = min(int(n * 0.7), max(int(n * 0.5), 50))
     records  = []
 
     for i in range(warmup, n - 1):
@@ -539,26 +538,33 @@ def _synthetic_signals(df_raw):
 MODEL_NAMES = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy',
                'randomforest', 'randomforest_heavy', 'catboost_bayes']
 
-def build_state(row):
+def build_state(row, days_in_trade=0, unrealized_pnl_atr=0.0, in_trade=0.0):
     """
-    Enhanced state vector (33 dims):
+    State vector (35 dims):
       7 model signals    (encoded: LONG=1, SHORT=-1, HOLD=0)
-      7 model probs      (0..1, uses per-trade ensemble prob where available)
-      + 4 new indicators (ADX, Choppiness, AO, DPO)
+      7 model probs      (0..1)
       RSI_14 normalised  (-1..1 mapped from 0..100)
-      RSI_7  normalised  (-1..1 mapped from 0..100, shorter-term momentum)
-      Trend              (already a ratio)
-      Volatility         (normalized)
+      RSI_7  normalised  (-1..1, shorter-term momentum)
+      Trend              (Close vs SMA20 ratio)
+      Volatility         (normalized, capped at 5%)
       ATR                (normalized by close price)
-      MACD histogram     (momentum direction/strength, normalized)
-      Bollinger %B       (0..1 position within bands, centered at 0)
-      Stochastic %K      (0..100 normalized to -1..1)
-      Volume ratio       (current vol / 20-day avg, normalized)
-      SMA50 distance     (Close vs SMA50 ratio)
-      Model agreement    (std of model signals)
-      Avg model confidence (mean of probs)
-      Signal consensus   (majority vote: 1=LONG, -1=SHORT, 0=HOLD)
-      High confidence count (number of models with prob > 0.7)
+      MACD histogram     (normalized)
+      Bollinger %B       (centered at 0)
+      Stochastic %K      (normalized to -1..1)
+      Volume ratio       (centered at 0)
+      SMA50 distance     (ratio)
+      Regime             (BULL=1, BEAR=-1, RANGING=0)
+      ADX_14             (0-1, trend strength)
+      Choppiness         (0-1, high = ranging)
+      AO                 (normalized by price)
+      DPO                (normalized by price)
+      Model signal std   (disagreement measure)
+      Avg model prob     (confidence)
+      Consensus vote     (1=LONG, -1=SHORT, 0=HOLD)
+      High-confidence %  (fraction of models with prob > 0.7)
+      In-trade flag      (0=not in trade, 1=in trade)
+      Days in trade      (normalized 0..1 over MAX_DAYS)
+      Unrealized P&L     (in ATR units, clipped ±3)
     """
     state = []
 
@@ -575,54 +581,47 @@ def build_state(row):
 
     # Market indicators
     state.append((float(row.get('rsi', 50)) - 50) / 50)
-    state.append((float(row.get('rsi_7', 50)) - 50) / 50)  # short-term RSI
+    state.append((float(row.get('rsi_7', 50)) - 50) / 50)
     state.append(float(row.get('trend', 0)))
 
-    # Volatility (normalized)
     vol = float(row.get('volatility', 0))
-    state.append(min(vol / 5.0, 1.0))  # cap at 5% daily vol
+    state.append(min(vol / 5.0, 1.0))
 
-    # ATR (normalized by price)
     close = float(row.get('close', 1))
     atr = float(row.get('atr', 0))
     state.append(atr / (close + 1e-10))
 
-    # Chart indicators
     macd_hist = float(row.get('macd_hist', 0))
-    state.append(np.clip(macd_hist / (close + 1e-10) * 100, -5, 5))  # MACD histogram normalized
+    state.append(np.clip(macd_hist / (close + 1e-10) * 100, -5, 5))
 
     bb_pct = float(row.get('bb_pct', 0.5))
-    state.append((bb_pct - 0.5) * 2)  # center at 0, range roughly -1..1
+    state.append((bb_pct - 0.5) * 2)
 
     stoch_k = float(row.get('stoch_k', 50))
-    state.append((stoch_k - 50) / 50)  # normalize to -1..1
+    state.append((stoch_k - 50) / 50)
 
     vol_ratio = float(row.get('volume_ratio', 1.0))
-    state.append(np.clip((vol_ratio - 1.0), -2, 2))  # centered at 0, clipped
+    state.append(np.clip((vol_ratio - 1.0), -2, 2))
 
-    state.append(float(row.get('sma50_ratio', 0)))  # already a ratio
-
-    # Market regime (BULL=1, BEAR=-1, RANGING=0)
+    state.append(float(row.get('sma50_ratio', 0)))
     state.append(float(row.get('regime', 0)))
 
-    # New indicators (normalized for state vector)
     adx = float(row.get('adx', 25))
-    state.append(adx / 100.0)  # ADX 0-100 → 0-1, trend strength
+    state.append(adx / 100.0)
 
     chop = float(row.get('chop', 50))
-    state.append(chop / 100.0)  # Choppiness 0-100 → 0-1, high = ranging
+    state.append(chop / 100.0)
 
     ao = float(row.get('ao', 0))
-    state.append(np.clip(ao / (close + 1e-10) * 100, -5, 5))  # AO normalized by price
+    state.append(np.clip(ao / (close + 1e-10) * 100, -5, 5))
 
     dpo = float(row.get('dpo', 0))
-    state.append(np.clip(dpo / (close + 1e-10) * 100, -5, 5))  # DPO normalized by price
+    state.append(np.clip(dpo / (close + 1e-10) * 100, -5, 5))
 
-    # Derived features: model agreement metrics
-    state.append(np.std(signals))  # disagreement measure
-    state.append(np.mean(probs))   # avg confidence
+    # Model agreement metrics
+    state.append(np.std(signals))
+    state.append(np.mean(probs))
 
-    # Consensus vote
     vote_long = signals.count(1)
     vote_short = signals.count(-1)
     if vote_long > vote_short:
@@ -633,11 +632,14 @@ def build_state(row):
         consensus = 0
     state.append(float(consensus))
 
-    # High confidence count
     high_conf_count = sum(1 for p in probs if p > 0.7)
     state.append(high_conf_count / len(probs))
 
-    # Convert to array and handle any NaN/Inf values
+    # Position context: lets agent learn time-based and P&L-based exit rules
+    state.append(float(in_trade))
+    state.append(float(days_in_trade) / MAX_DAYS)
+    state.append(float(np.clip(unrealized_pnl_atr, -3.0, 3.0)))
+
     state_array = np.array(state, dtype=np.float32)
     state_array = np.nan_to_num(state_array, nan=0.0, posinf=1.0, neginf=-1.0)
     state_array = np.clip(state_array, -10.0, 10.0)
@@ -645,7 +647,7 @@ def build_state(row):
     return state_array
 
 
-STATE_DIM  = 33   # state: 7 models×2 + 15 market + 4 new indicators (ADX,CHOP,AO,DPO)
+STATE_DIM  = 35   # state: 7×2 signals+probs + 19 market + 2 agreement + 3 position context
 ACTION_DIM = 3    # LONG, SHORT, HOLD
 
 
@@ -848,115 +850,161 @@ class PPOPolicy:
 class TradingEnv:
     """
     One episode = one trade opportunity (one row in the dataset).
-    The agent sees model signals + market state, picks LONG/SHORT/HOLD,
-    then the price evolves for up to MAX_DAYS.
+
+    Key improvements vs. original:
+    - State rebuilds each step with live position context (days held, unrealized P&L)
+    - TP/SL checked against intraday High/Low (not just close) — realistic SL hits
+    - Low-consensus entries are penalised during training, not silently overridden
+    - REWARD_CORRECT_DIR removed (TP/SL already captures direction correctness)
     """
 
-    def __init__(self, signals_df, lookahead_prices):
+    def __init__(self, signals_df, lookahead_prices, lookahead_hl=None):
         self.signals_df       = signals_df.reset_index(drop=True)
-        self.lookahead_prices = lookahead_prices   # dict: row_idx -> list of future prices
+        self.lookahead_prices = lookahead_prices   # dict: row_idx -> list of future closes
+        self.lookahead_hl     = lookahead_hl or {}  # dict: row_idx -> list of (high, low) tuples
         self.n_episodes       = len(signals_df)
         self.reset()
+
+    def _make_state(self):
+        row = self.signals_df.iloc[self.ep_idx]
+        close = float(row['close'])
+        atr   = max(float(row.get('atr', 0.0)), 0.01 * close)
+        unrealized = (self._current_price - self._entry) / (atr + 1e-10)
+        if self._action == ACTION_SHORT:
+            unrealized = -unrealized
+        return build_state(
+            row,
+            days_in_trade=self.day,
+            unrealized_pnl_atr=unrealized if self._in_trade else 0.0,
+            in_trade=1.0 if self._in_trade else 0.0,
+        )
 
     def reset(self, idx=None):
         if idx is None:
             self.ep_idx = np.random.randint(0, self.n_episodes)
         else:
             self.ep_idx = idx
-        self.day      = 0
-        self.action   = None
-        self.entry    = self.signals_df['close'].iloc[self.ep_idx]
-        row           = self.signals_df.iloc[self.ep_idx]
-        self.state    = build_state(row)
+        self.day           = 0
+        self._action       = None
+        self._in_trade     = False
+        row                = self.signals_df.iloc[self.ep_idx]
+        self._entry        = float(row['close'])
+        self._current_price = self._entry
+        self.state         = self._make_state()
         return self.state
 
     def step(self, action):
         row   = self.signals_df.iloc[self.ep_idx]
         close = float(row['close'])
-
-        # ATR-based TP/SL: more robust than return-std (consistent with model scripts)
-        atr    = max(float(row.get('atr', 0.0)), 0.01 * close)  # fallback: 1% of price
+        atr   = max(float(row.get('atr', 0.0)), 0.01 * close)
         sl_dist = 1.0 * atr
         tp_dist = 1.5 * atr
 
-        if action == ACTION_HOLD:
-            reward = REWARD_HOLD
-            done   = (self.day >= MAX_DAYS - 1)
-            info   = {'outcome': 'HOLD', 'days': self.day + 1}
-            self.day += 1
-            return self.state, reward, done, info
+        # --- Low-consensus penalty (training-time version of the backtest filter) ---
+        signals_raw = [float(row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
+        n_long  = signals_raw.count(1)
+        n_short = signals_raw.count(-1)
+        n_agree = max(n_long, n_short)
+        regime  = float(row.get('regime', 0))
 
-        # LONG or SHORT - simulate next-day outcome
-        futures = self.lookahead_prices.get(self.ep_idx, [])
-        entry   = close
+        if action == ACTION_HOLD:
+            self._in_trade = False
+            self.day += 1
+            done  = (self.day >= MAX_DAYS - 1)
+            self.state = self._make_state()
+            return self.state, REWARD_HOLD, done, {'outcome': 'HOLD', 'days': self.day}
+
+        # Penalise low-consensus entries so the agent learns to skip them,
+        # mirroring the hard override applied at inference time.
+        consensus_ok = (
+            n_agree >= 5 or
+            (n_agree >= 4 and (
+                (action == ACTION_LONG  and regime > -0.5) or
+                (action == ACTION_SHORT and regime <  0.5))) or
+            (n_agree >= 3 and (
+                (action == ACTION_LONG  and regime >  0.0) or
+                (action == ACTION_SHORT and regime <  0.0)))
+        )
+        if not consensus_ok:
+            self._in_trade = False
+            self.day += 1
+            done  = (self.day >= MAX_DAYS - 1)
+            self.state = self._make_state()
+            return self.state, -0.5, done, {'outcome': 'NO_CONSENSUS', 'days': self.day}
+
+        # Regime-aligned reward shaping
+        regime_bonus = 0.0
+        if   (action == ACTION_LONG  and regime < -0.5) or (action == ACTION_SHORT and regime > 0.5):
+            regime_bonus = -0.5   # fighting the trend
+        elif (action == ACTION_LONG  and regime >  0.5) or (action == ACTION_SHORT and regime < -0.5):
+            regime_bonus =  0.3   # with the trend
+
+        # LONG or SHORT — simulate outcome using intraday H/L for realistic SL checks
+        self._action    = action
+        self._in_trade  = True
+        self._entry     = close
+        entry           = close
+        futures_close   = self.lookahead_prices.get(self.ep_idx, [])
+        futures_hl      = self.lookahead_hl.get(self.ep_idx, [])
 
         if action == ACTION_LONG:
             sl_price = entry - sl_dist
             tp_price = entry + tp_dist
-        else:  # SHORT
+        else:
             sl_price = entry + sl_dist
             tp_price = entry - tp_dist
 
-        reward   = REWARD_HOLD
+        reward   = 0.0
         done     = False
         outcome  = 'NEUTRAL'
         days_out = 1
 
-        for d, fp in enumerate(futures[:MAX_DAYS]):
+        for d in range(min(len(futures_close), MAX_DAYS)):
             days_out = d + 1
+            fp = futures_close[d]
+            self._current_price = fp
+
+            # Use intraday high/low when available for realistic TP/SL detection
+            if d < len(futures_hl):
+                fh, fl = futures_hl[d]
+            else:
+                fh, fl = fp, fp  # fallback: only close available
+
             if action == ACTION_LONG:
-                if fp <= sl_price:
-                    reward  = REWARD_SL
+                # Low pierces SL before high reaches TP — pessimistic (realistic)
+                if fl <= sl_price:
+                    reward  = REWARD_SL + regime_bonus
                     done    = True
                     outcome = 'SL'
                     break
-                elif fp >= tp_price:
-                    reward  = REWARD_TP
+                elif fh >= tp_price:
+                    reward  = REWARD_TP + regime_bonus
                     done    = True
                     outcome = 'TP'
                     break
             else:  # SHORT
-                if fp >= sl_price:
-                    reward  = REWARD_SL
+                if fh >= sl_price:
+                    reward  = REWARD_SL + regime_bonus
                     done    = True
                     outcome = 'SL'
                     break
-                elif fp <= tp_price:
-                    reward  = REWARD_TP
+                elif fl <= tp_price:
+                    reward  = REWARD_TP + regime_bonus
                     done    = True
                     outcome = 'TP'
                     break
-            reward += REWARD_HOLD
 
         if not done:
             done    = True
             outcome = 'TIMEOUT'
-            reward += REWARD_TIMEOUT  # additional penalty for timeout
+            reward  = REWARD_TIMEOUT + regime_bonus
 
-        # Small bonus for picking direction that matches model consensus
-        row = self.signals_df.iloc[self.ep_idx]
-        signals = [float(row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
-        consensus = 1 if signals.count(1) > signals.count(-1) else (-1 if signals.count(-1) > signals.count(1) else 0)
-
-        if action == ACTION_LONG and consensus == 1:
-            reward += REWARD_CORRECT_DIR
-        elif action == ACTION_SHORT and consensus == -1:
-            reward += REWARD_CORRECT_DIR
-
-        # Regime-aligned reward shaping: agent learns to trade WITH the trend.
-        regime = float(row.get('regime', 0))
-        counter_regime = (action == ACTION_LONG and regime < -0.5) or \
-                         (action == ACTION_SHORT and regime > 0.5)
-        aligned_regime = (action == ACTION_LONG and regime > 0.5) or \
-                         (action == ACTION_SHORT and regime < -0.5)
-        if counter_regime:
-            reward -= 0.5   # penalty: fighting the trend
-        elif aligned_regime:
-            reward += 0.3   # bonus: trading with the trend
+        self._in_trade = False
+        self.day += 1
+        self.state = self._make_state()
 
         info = {'outcome': outcome, 'entry': entry, 'sl': sl_price, 'tp': tp_price,
                 'days': min(days_out, MAX_DAYS)}
-        self.day += 1
         return self.state, reward, done, info
 
 
@@ -966,25 +1014,28 @@ class TradingEnv:
 
 def build_lookahead(signals_df, df_raw):
     """
-    For each row in signals_df, build the list of future close prices (up to MAX_DAYS).
-    Matches signals_df rows to df_raw by date string; falls back to integer index if
-    date lookup fails (handles format differences between Windows/Mac path styles).
+    For each row in signals_df, build:
+      - list of future close prices (up to MAX_DAYS)
+      - list of (high, low) tuples for each future day
+
+    Using intraday H/L lets TradingEnv detect realistic TP/SL wicks.
+    Matches signals_df rows to df_raw by date string; falls back to integer index.
     """
-    # Build date->index map with normalised string keys
+    has_hl = ('High' in df_raw.columns and 'Low' in df_raw.columns)
+
     date_to_raw_idx = {}
     if 'Date' in df_raw.columns:
         for i, d in enumerate(df_raw['Date']):
             date_to_raw_idx[str(d).strip()] = i
 
-    lookahead = {}
+    lookahead    = {}
+    lookahead_hl = {}
     for row_i, row in signals_df.iterrows():
         raw_i = None
 
-        # Try date-based lookup first
         if 'date' in signals_df.columns:
             raw_i = date_to_raw_idx.get(str(row['date']).strip(), None)
 
-        # Fallback: use the integer value stored in 'date' when no Date column existed
         if raw_i is None:
             try:
                 raw_i = int(row.get('date', row_i))
@@ -993,18 +1044,25 @@ def build_lookahead(signals_df, df_raw):
             except (ValueError, TypeError):
                 raw_i = row_i
 
-        futures = []
+        futures    = []
+        futures_hl = []
         for d in range(1, MAX_DAYS + 1):
             idx = raw_i + d
             if idx < len(df_raw):
                 futures.append(float(df_raw['Close'].iloc[idx]))
-        lookahead[row_i] = futures
+                if has_hl:
+                    futures_hl.append((
+                        float(df_raw['High'].iloc[idx]),
+                        float(df_raw['Low'].iloc[idx]),
+                    ))
+        lookahead[row_i]    = futures
+        lookahead_hl[row_i] = futures_hl
 
     n_empty = sum(1 for v in lookahead.values() if len(v) == 0)
     if n_empty > 0:
         print(f"  Warning: {n_empty} lookahead rows have no future prices (end of data)")
 
-    return lookahead
+    return lookahead, lookahead_hl
 
 
 # ---------------------------------------------------------------------------
@@ -1110,40 +1168,42 @@ def backtest(env, policy, n_episodes=None):
     if n_episodes is None:
         n_episodes = env.n_episodes
 
-    trades   = []
+    trades = []
     for ep_i in range(n_episodes):
-        state = env.reset(idx=ep_i)
-        done  = False
+        state   = env.reset(idx=ep_i)
+        done    = False
         total_r = 0.0
         while not done:
             action, prob, _ = policy.act_greedy(state)
-            # Multi-tier consensus (mirrors get_current_action)
+            # The consensus filter is already encoded in the reward during training.
+            # At backtest/inference we apply it as a hard gate to match live behaviour.
             row = env.signals_df.iloc[env.ep_idx]
             signals_raw = [int(row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
             n_agree = max(signals_raw.count(1), signals_raw.count(-1))
-            reg = float(row.get('regime', 0))
-            if n_agree >= 5:       prob = prob * 1.0
-            elif n_agree >= 4 and (
-                (action == ACTION_LONG and reg > -0.5) or
-                (action == ACTION_SHORT and reg < 0.5)):
-                                    prob = prob * 0.85
-            elif n_agree >= 3 and (
-                (action == ACTION_LONG and reg > 0) or
-                (action == ACTION_SHORT and reg < 0)):
-                                    prob = prob * 0.6
-            else:                  action = ACTION_HOLD; prob = 0.3
+            reg     = float(row.get('regime', 0))
+            if not (
+                n_agree >= 5 or
+                (n_agree >= 4 and (
+                    (action == ACTION_LONG  and reg > -0.5) or
+                    (action == ACTION_SHORT and reg <  0.5))) or
+                (n_agree >= 3 and (
+                    (action == ACTION_LONG  and reg >  0.0) or
+                    (action == ACTION_SHORT and reg <  0.0)))
+            ):
+                action = ACTION_HOLD
+                prob   = 0.3
             state, reward, done, info = env.step(action)
             total_r += reward
         trades.append({
-            'episode':  ep_i,
-            'action':   ACTIONS[action],
-            'outcome':  info.get('outcome', 'N/A'),
-            'reward':   total_r,
-            'prob':     float(prob),
-            'entry':    info.get('entry', 0),
-            'sl':       info.get('sl', 0),
-            'tp':       info.get('tp', 0),
-            'days':     info.get('days', 1),
+            'episode': ep_i,
+            'action':  ACTIONS[action],
+            'outcome': info.get('outcome', 'N/A'),
+            'reward':  total_r,
+            'prob':    float(prob),
+            'entry':   info.get('entry', 0),
+            'sl':      info.get('sl', 0),
+            'tp':      info.get('tp', 0),
+            'days':    info.get('days', 1),
         })
 
     return pd.DataFrame(trades)
@@ -1334,9 +1394,9 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
         print("Error: Not enough signal rows to train agent (need >= 50)")
         sys.exit(1)
 
-    # Build lookahead prices
+    # Build lookahead prices (close + intraday H/L for realistic TP/SL simulation)
     print("\n[STEP 2/4] Building lookahead price table...")
-    lookahead = build_lookahead(signals_df, df_raw)
+    lookahead, lookahead_hl = build_lookahead(signals_df, df_raw)
 
     # Split signals into train/val
     n_sig      = len(signals_df)
@@ -1345,8 +1405,10 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
     val_sig    = signals_df.iloc[train_cut:].reset_index(drop=True)
 
     # Remap lookahead indices for train/val
-    train_la = {i: lookahead.get(i, []) for i in range(len(train_sig))}
-    val_la   = {i: lookahead.get(train_cut + i, []) for i in range(len(val_sig))}
+    train_la   = {i: lookahead.get(i, [])    for i in range(len(train_sig))}
+    val_la     = {i: lookahead.get(train_cut + i, []) for i in range(len(val_sig))}
+    train_la_hl = {i: lookahead_hl.get(i, [])    for i in range(len(train_sig))}
+    val_la_hl   = {i: lookahead_hl.get(train_cut + i, []) for i in range(len(val_sig))}
 
     train_months = len(train_sig) / 21.0
     val_months   = len(val_sig)   / 21.0
@@ -1371,7 +1433,7 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
         weights_file  = os.path.join(MODEL_DIR, f'{ticker}_{date_str}_rl_agent_weights.npz')
         csv_hash_file = os.path.join(MODEL_DIR, f'{ticker}_{date_str}_rl_agent_csv_hash.txt')
 
-    train_env = TradingEnv(train_sig, train_la)
+    train_env = TradingEnv(train_sig, train_la, lookahead_hl=train_la_hl)
 
     # Warm-start from latest saved weights for this ticker (any date)
     from model_store import find_latest_rl_weights
@@ -1421,7 +1483,7 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
 
     # Backtest on validation set
     print("\n[STEP 4/4] Backtesting on validation set...")
-    val_env    = TradingEnv(val_sig, val_la)
+    val_env    = TradingEnv(val_sig, val_la, lookahead_hl=val_la_hl)
     trades_df  = backtest(val_env, policy)
     metrics    = compute_metrics(trades_df, val_months)
 
