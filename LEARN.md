@@ -1239,6 +1239,20 @@ This ensures the correct `libomp` is resident before PyTorch loads its copy.
 **Why it fails**: if someone tunes `REWARD_SL` from `-1.0` to `-0.8`, they would expect all negative rewards to be in one place. A magic literal is invisible during that tuning pass.
 **Right**: define `REWARD_NO_CONSENSUS = -0.5` alongside the other constants and use `REWARD_NO_CONSENSUS` in `TradingEnv.step()`.
 
+### NumPy PPO update ignores old_log_probs — not actually PPO
+**Wrong**: `PPOPolicy.update()` accepts `old_log_probs` and `clip_eps` but never uses them. The update reduces to plain policy gradient (REINFORCE), which applies the full advantage as a gradient step with no clipping. Large advantages produce catastrophically large weight updates — the exact failure mode PPO was invented to prevent.
+**Why it fails**: without the clipped ratio `min(r*A, clip(r, 1-e, 1+e)*A)`, every bad episode that happens to have a large estimated advantage will push the policy weights hard in one direction. This causes instability and policy collapse, especially when sampling from diverse episodes.
+**Right**: compute `ratio = exp(new_log_prob - old_lp)` and zero out `ppo_adv` when the ratio is already outside the clip bounds and would push it further out (i.e. if `adv >= 0` and `ratio >= 1+clip_eps`, skip; if `adv < 0` and `ratio <= 1-clip_eps`, skip). This implements the one-sided PPO clip correctly without needing a separate `torch.min` — the clipping is done in `ppo_adv` before it reaches `grad_scale`.
+
+### compute_metrics() profit_factor excludes TIMEOUT losses
+**Wrong**: `gross_loss = abs(sl_trades['reward'].sum())` — only trades with `outcome='SL'` are counted as losses. TIMEOUT trades (`REWARD_TIMEOUT = -0.3`) and regime-penalised trades all produce negative rewards but are silently excluded. If there are no SL trades at all, `gross_loss = 1e-10` and profit_factor displays as a huge number (e.g. `15000000.00`) — completely misleading.
+**Why it fails**: profit factor is supposed to be total gross profit divided by total gross loss across all active trades. Excluding timeout losses overstates performance and can mask a strategy that always times out without hitting TP.
+**Right**: `losing_trades = non_hold[non_hold['reward'] < 0]` captures all negative-reward trades regardless of outcome label. `gross_loss = abs(losing_trades['reward'].sum())` gives the true total loss including timeouts and regime penalties.
+
+### Non-ASCII em-dash in print strings across multiple files
+**Wrong**: using `—` (U+2014 EM DASH) in print strings in `recount.py`, `rank_stocks.py`, and `train_catboost_bayes.py`. This crashes on ASCII-only terminals and CI environments.
+**Right**: replace with plain ASCII ` - ` (space-hyphen-space). All print strings must be ASCII-only. Check all files, not just `agent_trader.py`.
+
 ### Feature multicollinearity in tree models (max-2-per-family rule)
 **Wrong**: including RSI_7, RSI_14, RSI_21 in the same model. All three carry essentially the same signal -- fast/slow RSI. The tree wastes splits arbitrating between them.
 **Right**: pick at most 2 periods per indicator family. For RSI: 7 (fast) and 14 (standard). Drop RSI_21. Same logic applies to ATR (only ATR_14), CCI (only CCI_14), Volatility (5d and 20d only). Also drop indicators that are conceptual duplicates of others already present: WILLR (same idea as STOCH), ROC and MOM (same idea as Price_change). See Section 3.9 for the full rationale.

@@ -89,7 +89,7 @@ def main():
                 print(f"  {r['decision']} | Conf={r['confidence']:.1f}% | "
                       f"WR={r['winrate']:.1f}% | PF={r['profit_factor']:.2f}")
             else:
-                print(f"  FAILED — no report generated")
+                print(f"  FAILED - no report generated")
         except Exception as e:
             print(f"  ERROR: {e}")
 

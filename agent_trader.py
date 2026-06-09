@@ -806,7 +806,16 @@ class PPOPolicy:
                                                returns, advantages):
                 probs, value, h1, h2, _ = self.forward(s)
 
-                grad_scale = self.lr * np.clip(adv, -2.0, 2.0) * 0.15
+                # PPO clipped surrogate: zero out gradient when ratio is outside clip
+                # bounds and would push it further outside — this is the key PPO innovation.
+                new_log_prob = np.log(probs[a] + 1e-10)
+                ratio = np.exp(new_log_prob - old_lp)
+                if adv >= 0:
+                    ppo_adv = adv if ratio < 1.0 + clip_eps else 0.0
+                else:
+                    ppo_adv = adv if ratio > 1.0 - clip_eps else 0.0
+
+                grad_scale = self.lr * np.clip(ppo_adv, -2.0, 2.0) * 0.15
 
                 # Compute ALL gradients using pre-update weights before modifying anything.
                 # Applying updates before computing downstream gradients corrupts backprop.
@@ -1191,12 +1200,12 @@ def compute_metrics(trades_df, n_months):
     if len(non_hold) == 0:
         return {}
 
-    tp_trades = non_hold[non_hold['outcome'] == 'TP']
-    sl_trades = non_hold[non_hold['outcome'] == 'SL']
+    tp_trades      = non_hold[non_hold['outcome'] == 'TP']
+    losing_trades  = non_hold[non_hold['reward'] < 0]   # SL + TIMEOUT + regime-penalised
 
-    win_rate     = len(tp_trades) / len(non_hold) * 100
-    gross_profit = tp_trades['reward'].sum() if len(tp_trades) else 0.0
-    gross_loss   = abs(sl_trades['reward'].sum()) if len(sl_trades) else 1e-10
+    win_rate      = len(tp_trades) / len(non_hold) * 100
+    gross_profit  = tp_trades['reward'].sum() if len(tp_trades) else 0.0
+    gross_loss    = abs(losing_trades['reward'].sum()) if len(losing_trades) else 1e-10
     profit_factor = gross_profit / (gross_loss + 1e-10)
 
     equity       = [0.0]

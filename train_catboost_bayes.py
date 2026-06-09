@@ -180,7 +180,7 @@ def run_catboost_bayes(csv_file, n_trials=30):
         import keras
         from keras import layers
     except ImportError:
-        print("  Keras not available — skipping LSTM feature generator")
+        print("  Keras not available - skipping LSTM feature generator")
         lstm_pred_tr = np.zeros((len(X_tr), 3))
         lstm_pred_te = np.zeros((len(X_te), 3))
         lstm_pred_now = np.zeros((1, 3))

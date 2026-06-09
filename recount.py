@@ -203,7 +203,7 @@ def load_rl_policy(ticker):
     weights_path, kind = find_latest_rl_weights(ticker)
 
     if weights_path is None:
-        print("  Warning: No RL policy found — using voting fallback")
+        print("  Warning: No RL policy found - using voting fallback")
         return None, None
 
     print(f"  Loading RL policy: {os.path.basename(weights_path)}")
@@ -223,10 +223,10 @@ def load_rl_policy(ticker):
             policy.Wv2 = w['Wv2']; policy.bv2 = w['bv2']
             return policy, 'numpy'
         else:
-            print(f"  Warning: RL weights are {kind} but PyTorch not available — using voting fallback")
+            print(f"  Warning: RL weights are {kind} but PyTorch not available - using voting fallback")
             return None, None
     except Exception as e:
-        print(f"  Warning: Could not load RL policy ({e}) — using voting fallback")
+        print(f"  Warning: Could not load RL policy ({e}) - using voting fallback")
         return None, None
 
 
@@ -258,7 +258,7 @@ def calculate_tp_sl(close, atr, signal_int):
 
 def run_recount(ticker, current_price, leverage=5.0, months=12):
     print("=" * 70)
-    print("RECOUNT — LIVE TRADING PREDICTION")
+    print("RECOUNT - LIVE TRADING PREDICTION")
     print("=" * 70)
 
     # ------------------------------------------------------------------
