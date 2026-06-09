@@ -303,11 +303,10 @@ def load_model_predictions(csv_file):
         print("  No pkl models found - using synthetic signal generation for demonstration")
         return _synthetic_signals(df_raw)
 
-    # Walk-forward: models trained on 90/10 split. Use 80% warmup for
-    # pragmatic balance — mainly out-of-sample with enough RL training data.
+    # Walk-forward: use the same 90/10 split as training so the RL agent
+    # only ever sees out-of-sample model predictions.
     n        = len(df_raw)
-    warmup   = max(200, int(n * 0.8))
-    records  = []
+    warmup   = max(200, int(n * 0.9))
     records  = []
 
     for i in range(warmup, n - 1):
@@ -330,6 +329,10 @@ def load_model_predictions(csv_file):
                'dpo': df_raw['DPO_20'].iloc[i],
                'actual_next_close': df_raw['Close'].iloc[i + 1]}
 
+        # Adaptive threshold matching recount.py and all training scripts
+        vol_20d_pct = float(df_raw['Volatility_20d'].iloc[i]) if 'Volatility_20d' in df_raw.columns else 1.0
+        sig_threshold = max(0.15 * vol_20d_pct, 0.1)
+
         for name, (mdl, scl, feats) in loaded_models.items():
             try:
                 # Build feature vector for this row using the model's expected features
@@ -340,12 +343,12 @@ def load_model_predictions(csv_file):
                     continue
                 X    = scl.transform(feat_df)
                 pred = mdl.predict(X)[0]
-                move = pred  # model now predicts % return directly
+                move = pred  # model predicts % return directly
 
-                if move > 0.1:
+                if move > sig_threshold:
                     sig  = 1
                     prob = min(0.5 + abs(move) / 5, 0.95)
-                elif move < -0.1:
+                elif move < -sig_threshold:
                     sig  = -1
                     prob = min(0.5 + abs(move) / 5, 0.95)
                 else:
@@ -403,23 +406,22 @@ def _build_feature_row(df, idx, feats):
                     row_data[f] = [0.0]
                 continue
 
-            # ---- Price change: Price_change_Xd (raw ratio, as training scripts use) ----
+            # ---- Price change: Price_change_Xd (×100, matching training scripts) ----
             m = re.match(r'Price_change_(\d+)d', f)
             if m:
                 period = int(m.group(1))
                 if idx >= period:
-                    row_data[f] = [float(close.pct_change(period).iloc[idx])]
+                    row_data[f] = [float(close.pct_change(period).iloc[idx]) * 100]
                 else:
                     row_data[f] = [0.0]
                 continue
 
-            # ---- Volatility: Volatility_Xd (return-based for heavy models, dollar for light) ----
+            # ---- Volatility: Volatility_Xd (×100, return-based std matching training scripts) ----
             m = re.match(r'Volatility_(\d+)d', f)
             if m:
                 period = int(m.group(1))
                 if idx >= period:
-                    # Use return-based std*100 (matches heavy model training scripts)
-                    row_data[f] = [float(close.pct_change().rolling(period).std().iloc[idx] * 100)]
+                    row_data[f] = [float(close.pct_change().rolling(period).std().iloc[idx]) * 100]
                 else:
                     row_data[f] = [0.0]
                 continue

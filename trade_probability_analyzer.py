@@ -100,18 +100,18 @@ def predict_multi_day_path(model, scaler, df, feature_cols, current_price,
                 dummy[0, 0] = pred_scaled
                 pred_price = scaler.inverse_transform(dummy)[0, 0]
         else:
-            # For GBM models (LightGBM/XGBoost)
-            # Make sure all feature columns exist
+            # For GBM models (LightGBM/XGBoost) — model predicts % return, not price
             missing_cols = [col for col in feature_cols if col not in df_sim.columns]
             if missing_cols:
                 print(f"Warning: Missing columns: {missing_cols}")
-                # Fill missing columns with last valid value
                 for col in missing_cols:
                     df_sim[col] = df_sim['Close']
 
             last_row = df_sim[feature_cols].iloc[-1:].values
             last_row_scaled = scaler.transform(last_row)
-            pred_price = model.predict(last_row_scaled)[0]
+            pred_return_pct = model.predict(last_row_scaled)[0]
+            prev_close = float(df_sim['Close'].iloc[-1])
+            pred_price = prev_close * (1 + pred_return_pct / 100)
 
         predicted_path.append(pred_price)
 

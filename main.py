@@ -106,11 +106,12 @@ def run_model(model_name, script_name, csv_file):
             }
 
         # Run the training script and capture output
+        timeout = 7200  # 2 hour timeout (heavy models: 3000 trees, 30+ min on CPU)
         result = subprocess.run(
             [sys.executable, script_path, csv_file],
             capture_output=True,
             text=True,
-            timeout=7200,  # 2 hour timeout (heavy models: 3000 trees, 30+ min on CPU)
+            timeout=timeout,
             cwd=os.path.dirname(os.path.abspath(__file__))  # Set working directory
         )
 
