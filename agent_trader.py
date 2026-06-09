@@ -169,8 +169,8 @@ def compute_indicators(df):
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
     minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
     atr14 = tr_adx.ewm(span=14, min_periods=14).mean()
-    plus_di = 100 * pd.Series(plus_dm).ewm(span=14, min_periods=14).mean() / (atr14 + 1e-10)
-    minus_di = 100 * pd.Series(minus_dm).ewm(span=14, min_periods=14).mean() / (atr14 + 1e-10)
+    plus_di = 100 * pd.Series(plus_dm, index=out.index).ewm(span=14, min_periods=14).mean() / (atr14 + 1e-10)
+    minus_di = 100 * pd.Series(minus_dm, index=out.index).ewm(span=14, min_periods=14).mean() / (atr14 + 1e-10)
     dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
     out['ADX_14'] = dx.ewm(span=14, min_periods=14).mean()
     out['PLUS_DI'] = plus_di; out['MINUS_DI'] = minus_di
@@ -463,6 +463,14 @@ def _build_feature_row(df, idx, feats):
         return None
 
 
+def _synthetic_sig(score):
+    if score > 0.1:  return 1
+    if score < -0.1: return -1
+    return 0
+
+def _synthetic_prob(score):
+    return float(np.clip(0.5 + abs(score) * 0.5, 0.5, 0.95))
+
 def _synthetic_signals(df_raw):
     """Fallback when no pkl models exist: derive signals from technical indicators."""
     n       = len(df_raw)
@@ -472,20 +480,11 @@ def _synthetic_signals(df_raw):
     for i in range(warmup, n - 1):
         rsi  = df_raw['RSI_14'].iloc[i]
         macd = df_raw['MACD_hist'].iloc[i]
-        vol  = df_raw['Volatility'].iloc[i]
         tr   = df_raw['Trend'].iloc[i]
 
         # 7 synthetic model proxies with slight random noise
         np.random.seed(i)
         noise = np.random.normal(0, 0.05, 7)
-
-        def _sig(score):
-            if score > 0.1:  return 1
-            if score < -0.1: return -1
-            return 0
-
-        def _prob(score):
-            return float(np.clip(0.5 + abs(score) * 0.5, 0.5, 0.95))
 
         scores = [
             (rsi - 50) / 50 + noise[0],
@@ -520,8 +519,8 @@ def _synthetic_signals(df_raw):
             'actual_next_close': df_raw['Close'].iloc[i + 1],
         }
         for name, score in zip(names, scores):
-            row[f'{name}_signal'] = _sig(score)
-            row[f'{name}_prob']   = _prob(score)
+            row[f'{name}_signal'] = _synthetic_sig(score)
+            row[f'{name}_prob']   = _synthetic_prob(score)
 
         records.append(row)
 
@@ -840,12 +839,8 @@ class PPOPolicy:
 class TradingEnv:
     """
     One episode = one trade opportunity (one row in the dataset).
-
-    Key improvements vs. original:
-    - State rebuilds each step with live position context (days held, unrealized P&L)
-    - TP/SL checked against intraday High/Low (not just close) — realistic SL hits
-    - Low-consensus entries are penalised during training, not silently overridden
-    - REWARD_CORRECT_DIR removed (TP/SL already captures direction correctness)
+    TP/SL are checked against intraday High/Low for realistic simulation.
+    Low-consensus entries receive a training-time penalty matching the inference filter.
     """
 
     def __init__(self, signals_df, lookahead_prices, lookahead_hl=None):
@@ -1375,8 +1370,7 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
     train_la_hl = {i: lookahead_hl.get(i, [])    for i in range(len(train_sig))}
     val_la_hl   = {i: lookahead_hl.get(train_cut + i, []) for i in range(len(val_sig))}
 
-    train_months = len(train_sig) / 21.0
-    val_months   = len(val_sig)   / 21.0
+    val_months = len(val_sig) / 21.0
 
     # Layer 2: PPO training on walk-forward signals
     print("\n[STEP 3/4] Training PPO agent (walk-forward layer 2)...")
@@ -1389,21 +1383,18 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
     if TORCH_AVAILABLE:
         print("  Using PyTorch PPO (improved gradients)")
         torch.manual_seed(42)
-        policy = PPOPolicyTorch(state_dim=STATE_DIM, hidden=128, lr=5e-5)
-        weights_file  = os.path.join(MODEL_DIR, f'{ticker}_{date_str}_rl_agent_torch.pt')
-        csv_hash_file = os.path.join(MODEL_DIR, f'{ticker}_{date_str}_rl_agent_torch_hash.txt')
+        policy       = PPOPolicyTorch(state_dim=STATE_DIM, hidden=128, lr=5e-5)
+        weights_file = os.path.join(MODEL_DIR, f'{ticker}_{date_str}_rl_agent_torch.pt')
     else:
         print("  Using NumPy PPO (install torch for better performance)")
-        policy = PPOPolicy(state_dim=STATE_DIM)
-        weights_file  = os.path.join(MODEL_DIR, f'{ticker}_{date_str}_rl_agent_weights.npz')
-        csv_hash_file = os.path.join(MODEL_DIR, f'{ticker}_{date_str}_rl_agent_csv_hash.txt')
+        policy       = PPOPolicy(state_dim=STATE_DIM)
+        weights_file = os.path.join(MODEL_DIR, f'{ticker}_{date_str}_rl_agent_weights.npz')
 
     train_env = TradingEnv(train_sig, train_la, lookahead_hl=train_la_hl)
 
     # Warm-start from latest saved weights for this ticker (any date)
     from model_store import find_latest_rl_weights
     existing_weights, existing_kind = find_latest_rl_weights(ticker)
-    csv_hash = str(os.path.getsize(csv_file)) + '_' + str(n_records)
     if existing_weights is not None:
         try:
             if existing_kind == 'torch' and TORCH_AVAILABLE:
@@ -1451,8 +1442,6 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
                      W1=policy.W1, b1=policy.b1, W2=policy.W2, b2=policy.b2,
                      W3=policy.W3, b3=policy.b3, Wv1=policy.Wv1, bv1=policy.bv1,
                      Wv2=policy.Wv2, bv2=policy.bv2)
-        with open(csv_hash_file, 'w') as fh:
-            fh.write(csv_hash)
     except Exception as e:
         print(f"  Warning: could not save weights: {e}")
 
