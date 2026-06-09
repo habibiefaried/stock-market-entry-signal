@@ -57,7 +57,7 @@ ACTION_HOLD  = 2
 REWARD_TP    =  1.5    # reward when take profit is hit (TP=1.5 vs SL=1.0 → 1.5:1 ratio)
 REWARD_SL    = -1.0    # reward when stop loss is hit
 REWARD_HOLD  =  0.0    # no penalty for holding — only hold when truly uncertain
-MAX_DAYS     =  15     # longer window for 3-day prediction horizon
+MAX_DAYS     =  15     # episode horizon (next-day prediction, 15 steps max)
 REWARD_TIMEOUT = -0.05  # tiny nudge: prefer trades that resolve decisively
 REWARD_CORRECT_DIR = 0.2  # bonus for picking direction matching model consensus
 MIN_RECORDS  =  150    # minimum rows needed to run agent (1yr ≈ 200 rows after dropna)
@@ -541,9 +541,9 @@ MODEL_NAMES = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy',
 
 def build_state(row):
     """
-    Enhanced state vector (31 dims):
-      6 model signals    (encoded: LONG=1, SHORT=-1, HOLD=0)
-      6 model probs      (0..1, uses per-trade ensemble prob where available)
+    Enhanced state vector (33 dims):
+      7 model signals    (encoded: LONG=1, SHORT=-1, HOLD=0)
+      7 model probs      (0..1, uses per-trade ensemble prob where available)
       + 4 new indicators (ADX, Choppiness, AO, DPO)
       RSI_14 normalised  (-1..1 mapped from 0..100)
       RSI_7  normalised  (-1..1 mapped from 0..100, shorter-term momentum)

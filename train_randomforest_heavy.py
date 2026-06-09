@@ -57,8 +57,8 @@ def create_features(df):
     out['Price_change_1d'] = c.pct_change(1) * 100
     out['Price_change_5d'] = c.pct_change(5) * 100
     out['Price_change_10d'] = c.pct_change(10) * 100
-    out['Volatility_5d'] = c.rolling(5).std()
-    out['Volatility_10d'] = c.rolling(10).std()
+    out['Volatility_5d'] = c.pct_change().rolling(5).std() * 100
+    out['Volatility_10d'] = c.pct_change().rolling(10).std() * 100
     out['MA_5'] = c.rolling(5).mean()
     out['MA_10'] = c.rolling(10).mean()
     out['MA_20'] = c.rolling(20).mean()
@@ -435,7 +435,8 @@ if __name__ == "__main__":
     max_feat = args.max_features
     if max_feat not in ('sqrt', 'log2', None):
         try:
-            max_feat = int(max_feat)
+            as_float = float(max_feat)
+            max_feat = int(as_float) if as_float >= 1 else as_float
         except ValueError:
             max_feat = 'sqrt'
 

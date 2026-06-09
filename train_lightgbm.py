@@ -121,18 +121,14 @@ def create_lag_features(df, feature_cols, lags=[1, 2, 3, 5, 10]):
     for lag in lags:
         df_lagged[f'Volume_lag_{lag}'] = df_lagged['Volume'].shift(lag)
 
-    # Price change features (percentage change)
-    # pct_change(1) = (today - yesterday) / yesterday
-    # This captures momentum: is price accelerating up or down?
-    df_lagged['Price_change_1d'] = df_lagged['Close'].pct_change(1)
-    df_lagged['Price_change_5d'] = df_lagged['Close'].pct_change(5)
-    df_lagged['Price_change_10d'] = df_lagged['Close'].pct_change(10)
+    # Price change features (percentage change ×100 → matches inference in _build_feature_row)
+    df_lagged['Price_change_1d'] = df_lagged['Close'].pct_change(1) * 100
+    df_lagged['Price_change_5d'] = df_lagged['Close'].pct_change(5) * 100
+    df_lagged['Price_change_10d'] = df_lagged['Close'].pct_change(10) * 100
 
-    # Volatility features (standard deviation of price)
-    # High volatility = risky, unpredictable price swings
-    # Low volatility = stable, predictable movement
-    df_lagged['Volatility_5d'] = df_lagged['Close'].rolling(window=5).std()
-    df_lagged['Volatility_10d'] = df_lagged['Close'].rolling(window=10).std()
+    # Volatility features (std of daily pct-returns ×100 → matches inference in _build_feature_row)
+    df_lagged['Volatility_5d'] = df_lagged['Close'].pct_change().rolling(window=5).std() * 100
+    df_lagged['Volatility_10d'] = df_lagged['Close'].pct_change().rolling(window=10).std() * 100
 
     # Target: Next day's closing price
     # shift(-1) moves data UP by 1 row, so current row gets NEXT day's value
