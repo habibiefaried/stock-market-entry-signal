@@ -323,7 +323,7 @@ def run_recount(ticker, current_price, leverage=5.0, months=12):
         'rsi': float(df['RSI_14'].iloc[last_idx]),
         'rsi_7': float(df['RSI_7'].iloc[last_idx]),
         'atr': float(df['ATR_14'].iloc[last_idx]),
-        'volatility': float(df.get('Volatility_20d', df.get('Volatility')).iloc[last_idx]),
+        'volatility': float(df['Volatility_20d'].iloc[last_idx] if 'Volatility_20d' in df.columns else df['Volatility'].iloc[last_idx]),
         'trend': float(df['Close_SMA20_ratio'].iloc[last_idx]),
         'macd_hist': float(df['MACD_hist'].iloc[last_idx]),
         'bb_pct': float(df['BB_pct'].iloc[last_idx]),

@@ -259,14 +259,6 @@ def split_train_test(df, train_ratio=9/10):
     return train_df, test_df
 
 
-def calculate_direction_metrics(y_true, y_pred):
-    yt = (np.diff(y_true) > 0).astype(int)
-    yp = (np.diff(y_pred) > 0).astype(int)
-    return (accuracy_score(yt, yp),
-            precision_score(yt, yp, zero_division=0),
-            recall_score(yt, yp, zero_division=0),
-            f1_score(yt, yp, zero_division=0))
-
 
 # ============================================================================
 # MAIN TRAINING FUNCTION

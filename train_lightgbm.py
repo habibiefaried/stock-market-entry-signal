@@ -190,45 +190,6 @@ def split_train_test(df, train_ratio=9/10):
 
     return train_df, test_df
 
-def calculate_direction_metrics(y_true, y_pred):
-    """
-    Calculate classification metrics for price direction
-
-    While our model predicts exact prices (regression), traders care about
-    DIRECTION: will price go up or down tomorrow?
-
-    This function converts price predictions to up/down and calculates:
-    - Accuracy: % of correct direction predictions
-    - Precision: Of predicted "ups", how many were actually up?
-    - Recall: Of actual "ups", how many did we predict?
-    - F1-Score: Balance of precision and recall
-
-    Args:
-        y_true (array): Actual prices
-        y_pred (array): Predicted prices
-
-    Returns:
-        accuracy, precision, recall, f1 (floats): Classification metrics
-
-    Example:
-    Day 1: $100 -> Day 2: $102 (UP) [checkmark] predicted correctly = 1
-    Day 2: $102 -> Day 3: $101 (DOWN) [x] predicted UP = 0
-    Accuracy = 1/2 = 50%
-    """
-    # Convert consecutive prices to direction changes
-    # np.diff([100, 102, 101]) = [2, -1]
-    # > 0 converts to True/False, .astype(int) converts to 1/0
-    y_true_direction = (np.diff(y_true) > 0).astype(int)  # 1=up, 0=down
-    y_pred_direction = (np.diff(y_pred) > 0).astype(int)
-
-    # Classification metrics
-    # These tell us how good we are at predicting "will it go up or down?"
-    accuracy = accuracy_score(y_true_direction, y_pred_direction)
-    precision = precision_score(y_true_direction, y_pred_direction, zero_division=0)
-    recall = recall_score(y_true_direction, y_pred_direction, zero_division=0)
-    f1 = f1_score(y_true_direction, y_pred_direction, zero_division=0)
-
-    return accuracy, precision, recall, f1
 
 def train_lightgbm_model(csv_file, n_estimators=2000, learning_rate=0.01, num_leaves=31):
     """

@@ -29,6 +29,13 @@ from datetime import datetime
 warnings.filterwarnings('ignore')
 logging.getLogger('matplotlib').setLevel(logging.ERROR)
 
+# xgboost must be imported before torch on macOS ARM to avoid OpenMP segfault
+# (torch bundles its own libomp which conflicts with xgboost's system libomp)
+try:
+    import xgboost as _xgb  # noqa: F401 — side-effect: loads libomp first
+except ImportError:
+    pass
+
 # Auto-detect PyTorch for improved performance
 try:
     import torch
@@ -53,7 +60,7 @@ REWARD_HOLD  =  0.0    # no penalty for holding — only hold when truly uncerta
 MAX_DAYS     =  15     # longer window for 3-day prediction horizon
 REWARD_TIMEOUT = -0.05  # tiny nudge: prefer trades that resolve decisively
 REWARD_CORRECT_DIR = 0.2  # bonus for picking direction matching model consensus
-MIN_RECORDS  =  300    # minimum rows needed to run agent
+MIN_RECORDS  =  150    # minimum rows needed to run agent (1yr ≈ 200 rows after dropna)
 
 
 # ---------------------------------------------------------------------------
@@ -305,8 +312,10 @@ def load_model_predictions(csv_file):
 
     # Walk-forward: use the same 90/10 split as training so the RL agent
     # only ever sees out-of-sample model predictions.
+    # Cap the warmup floor at 70% of n so short histories (1yr ≈ 200 rows)
+    # still leave at least ~20 signal rows for RL training.
     n        = len(df_raw)
-    warmup   = max(200, int(n * 0.9))
+    warmup   = min(int(n * 0.9), max(int(n * 0.7), 50))
     records  = []
 
     for i in range(warmup, n - 1):
@@ -461,7 +470,7 @@ def _build_feature_row(df, idx, feats):
 def _synthetic_signals(df_raw):
     """Fallback when no pkl models exist: derive signals from technical indicators."""
     n       = len(df_raw)
-    warmup  = max(200, int(n * 0.6))
+    warmup  = min(int(n * 0.6), max(int(n * 0.4), 50))
     records = []
 
     for i in range(warmup, n - 1):
@@ -1385,9 +1394,10 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
             print(f"  Could not load saved weights: {e}")
 
     if TORCH_AVAILABLE:
-        n_ep = max(len(train_sig) * 60, 40000)   # minimum 40K episodes
+        # 200 passes per row, capped at 40K for large datasets, floored at 2K for tiny ones
+        n_ep = max(min(len(train_sig) * 200, 40000), 2000)
     else:
-        n_ep = max(len(train_sig) * 40, 25000)
+        n_ep = max(min(len(train_sig) * 150, 25000), 1500)
 
     est_sec = max(1, n_ep // 7500)
     print(f"  Episodes planned: {n_ep}  (estimated time: ~{est_sec}-{est_sec*2} seconds)")
