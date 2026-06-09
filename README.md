@@ -47,11 +47,11 @@ main.py                    →  orchestrates   →  REPORT/RESULT-{TICKER}-{DATE
   ├── train_randomforest.py       (1000 trees, 5-fold walk-forward)
   ├── train_randomforest_heavy.py (1500 trees, depth 20, 7-fold walk-forward)
   ├── train_catboost_bayes.py     (LSTM features + Bayesian opt. CatBoost)
-  ├── agent_trader.py             (PPO RL, 33-dim state, consensus filter)
+  ├── agent_trader.py             (PPO RL, 33-dim state, consensus filter → {TICKER}_{YYYYMMDD}_rl_agent_torch.pt)
   └── recount.py                  (live prediction from saved MODELS/)
   
 MODELS/                     →  persists trained pkl/scaler/features for recount.py
-model_store.py              →  shared path helpers for MODELS/ naming
+model_store.py              →  shared path helpers for MODELS/ naming + find_latest_rl_weights()
 ```
 
 ## recount.py — Live Trading Prediction

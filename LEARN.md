@@ -79,7 +79,7 @@ In a time series, row t depends on row t-1. Shuffling destroys the signal. This 
 - **No random train/test split.** You must use a chronological split: train on the past, test on the future. This code uses a 90/10 chronological split.
 - **No cross-validation in the usual sense.** You need walk-forward validation (section 5.3).
 - **Lag features.** Tree models cannot see sequences; you give them the past explicitly by creating `Close_lag_1`, `Close_lag_2`, etc.
-- **Look-ahead bias.** A lethal mistake: if any future information leaks into your training features, your model looks good in backtesting but fails in live trading. This code always shifts targets forward with `shift(-3)` (3-day horizon) and scales only on training data.
+- **Look-ahead bias.** A lethal mistake: if any future information leaks into your training features, your model looks good in backtesting but fails in live trading. This code always shifts targets forward with `shift(-1)` (1-day horizon) and scales only on training data.
 
 ### 2.2 The target
 
@@ -130,7 +130,7 @@ RS = EMA(gains, p) / EMA(losses, p)
 RSI = 100 - (100 / (1 + RS))
 ```
 
-Bounded [0, 100]. Above 70: overbought. Below 30: oversold. Periods: 7, 14, 21.
+Bounded [0, 100]. Above 70: overbought. Below 30: oversold. Periods: 7, 14 (RSI_21 is excluded — see Section 3.9).
 
 ### 3.3 MACD
 
@@ -269,7 +269,7 @@ BB_squeeze        -- BB_width / BB_width.rolling(20).mean()  (<1 = squeeze)
 
 ### 4.1 Supervised Learning
 
-You have features **X** and a target **y**. Fit `f(X) ~= y`. Here y is the 3-day forward return (%).
+You have features **X** and a target **y**. Fit `f(X) ~= y`. Here y is the 1-day forward return (%).
 
 ### 4.2 Overfitting vs Underfitting
 
@@ -813,7 +813,7 @@ Using ATR_14 instead of rolling return-std captures intraday gap risk that retur
 **Why double?** A single walk-forward would use the same data to generate model predictions AND train the RL agent -- giving the agent access to future data it would not have in live trading.
 
 **Layer 1 (in `load_model_predictions`):**
-Load the trained pkl models (XGBoost, LightGBM, etc.) and run them in a walk-forward manner on historical data. The first 60% of data was already used to train those models. For the remaining 40%, generate predictions row by row -- each prediction is genuinely out-of-sample.
+Load the trained pkl models (XGBoost, LightGBM, etc.) and run them in a walk-forward manner on historical data. The first 90% of rows form the warmup window (matching the 90/10 chronological split used when the GBM models were trained). For the remaining 10%, generate predictions row by row -- each prediction is genuinely out-of-sample. The warmup length is `min(int(n*0.9), max(int(n*0.7), 50))` to remain robust on small datasets.
 
 **Layer 2 (in `train_ppo`):**
 Split those out-of-sample signal rows 80/20. Train the PPO agent on the first 80% of signals. Evaluate (backtest) on the held-out 20%.
@@ -837,9 +837,12 @@ The clip prevents the new policy from deviating too far from the old one in a si
 
 **This implementation:** Auto-detects PyTorch at import time. If available, uses a 2-layer MLP (128 hidden) with LayerNorm + Dropout, Adam optimiser, proper backpropagation, and gradient clipping. Falls back to a pure numpy MLP (64 hidden) with analytical gradients if PyTorch is not installed. The PyTorch version trains ~3x faster and achieves better convergence due to proper autograd.
 
-**Training scale:** Up to 80k episodes (PyTorch) or 60k (NumPy), batch_size=128,
-15 PPO update epochs per batch (PyTorch, 6 for NumPy). The agent warm-starts from
-saved weights when re-running on the same CSV file.
+**Training scale:** Up to 40k episodes (PyTorch) or 25k (NumPy), scaled proportionally
+to dataset size: `min(n_signals * 200, 40000)` (PyTorch) / `min(n_signals * 150, 25000)` (NumPy),
+with a minimum of 2000/1500 episodes. batch_size=128, 15 PPO update epochs per batch
+(PyTorch, 6 for NumPy). `MIN_RECORDS = 150` (allows 1-year datasets which yield ~200 rows
+after indicator dropna). The agent warm-starts from saved weights when re-running on
+the same CSV file.
 
 ### 18.5 Performance Targets
 
@@ -870,14 +873,20 @@ as a fallback (lower quality, but allows standalone agent testing).
 
 ### 18.7 Weight Persistence
 
-After each training run, the PPO weights are saved:
-- PyTorch: `rl_agent_torch.pt` + `rl_agent_torch_hash.txt`
-- NumPy: `rl_agent_weights.npz` + `rl_agent_csv_hash.txt`
+After each training run, the PPO weights are saved using the same naming convention
+as all other model artefacts:
+- PyTorch: `MODELS/{TICKER}_{YYYYMMDD}_rl_agent_torch.pt` + `{TICKER}_{YYYYMMDD}_rl_agent_torch_hash.txt`
+- NumPy:   `MODELS/{TICKER}_{YYYYMMDD}_rl_agent_weights.npz` + `{TICKER}_{YYYYMMDD}_rl_agent_csv_hash.txt`
 
 The hash file stores a fingerprint of the CSV (file size + row count). On the next run,
 if the fingerprint matches, the agent warm-starts from saved weights. If the CSV
 changed (different ticker, date range, or state dimension), training starts fresh.
-This means re-runs on the same data are faster and the agent starts from a learned policy.
+
+`model_store.find_latest_rl_weights(ticker)` auto-discovers the newest dated weight
+file for a given ticker by scanning `MODELS/` for `{ticker}_*_rl_agent_torch.pt` (or `.npz`).
+`recount.py` and `agent_trader.py` both use this helper so they always load the most
+recent policy without hard-coded paths. Old weights for a ticker are cleaned up by
+`cleanup_old_stock_files()` when models are rebuilt via `main.py` or `rank_stocks.py`.
 
 ### 18.8 Fallback Synthetic Signals
 
@@ -923,10 +932,10 @@ trades are graded by how many models agree:
 
 | Agreement | Confidence Scale | Regime Check | Rationale |
 |-----------|-----------------|-------------|-----------|
-| 5-6/6 | 100% | Always | Near-unanimous, full send |
-| 4/6 | 85% | Regime > -0.5 (LONG) or < 0.5 (SHORT) | Good agreement, regime-aware |
-| 3/6 | 60% | Regime > 0 (LONG) or < 0 (SHORT) | Must align with trend |
-| <3/6 | SKIP | — | Not enough agreement |
+| 5-7/7 | 100% | Always | Near-unanimous, full send |
+| 4/7 | 85% | Regime > -0.5 (LONG) or < 0.5 (SHORT) | Good agreement, regime-aware |
+| 3/7 | 60% | Regime > 0 (LONG) or < 0 (SHORT) | Must align with trend |
+| <3/7 | SKIP | — | Not enough agreement |
 
 This removes "lone wolf" trades and counter-trend trades that killed live performance.
 Implemented in both `backtest()` and `get_current_action()`.
@@ -1022,10 +1031,10 @@ The report is built as a list of strings, then joined and written to disk. The R
 | `train_randomforest.py` | Random Forest (1000 trees, 5-fold walk-forward) | `randomforest_model.pkl` + scaler + features |
 | `train_randomforest_heavy.py` | Random Forest-Heavy (1500 trees, depth 20, 50% bootstrap, 7-fold walk-forward) | `randomforest_heavy_model.pkl` + scaler + features |
 | `train_catboost_bayes.py` | LSTM feature generator + Bayesian-optimized CatBoost (Sun & Tian 2023) | `catboost_bayes_model.pkl` + scaler + features |
-| `agent_trader.py` | PPO RL meta-agent: reads 7 model pkl files, 33-dim state, consensus + regime filters | `rl_agent_torch.pt` or `rl_agent_weights.npz` (warm-start) |
+| `agent_trader.py` | PPO RL meta-agent: reads 7 model pkl files, 33-dim state, consensus + regime filters | `{TICKER}_{YYYYMMDD}_rl_agent_torch.pt` or `{TICKER}_{YYYYMMDD}_rl_agent_weights.npz` (warm-start) |
 | `trade_probability_analyzer.py` | Three-approach win probability analysis, called by all model scripts | (no file output — returns results) |
 | `recount.py` | Live trading prediction: loads saved models from MODELS/, predicts direction + TP/SL at current price | (stdout only) |
-| `model_store.py` | Shared helpers for MODELS/ file naming (`<TICKER>_<YYYYMMDD>_<name>.ext`) | (no file output) |
+| `model_store.py` | Shared helpers for MODELS/ file naming (`<TICKER>_<YYYYMMDD>_<name>.ext`); `find_latest_rl_weights(ticker)` auto-discovers newest dated RL weight file | (no file output) |
 
 ### 20.1 How to Run
 
@@ -1178,6 +1187,24 @@ yfinance produces this format automatically.
 **Wrong**: `if expected_move_pct > 0.5:` -- a 0.5% threshold means TSLA (3% daily vol) generates signals on nearly every day while JNJ (0.5% daily vol) generates very few.
 **Right**: `sig_threshold = max(0.15 * vol_20d_pct, 0.1)`. The threshold scales with each asset's own volatility so signal frequency is consistent across tickers.
 
+### macOS ARM: importing torch before xgboost causes a segfault
+**Wrong**: any import of `torch` (or any module that imports it) before `xgboost` is imported on macOS ARM (Apple Silicon).
+**Why**: both XGBoost and PyTorch bundle `libomp`. If PyTorch's `libomp` is loaded first, XGBoost's linker crashes with a segfault when it tries to load its own copy.
+**Right**: `agent_trader.py` guards against this with a no-op import at the top of the file:
+```python
+try:
+    import xgboost as _xgb  # noqa: F401 — loads libomp before torch
+except ImportError:
+    pass
+import torch
+```
+This ensures the correct `libomp` is resident before PyTorch loads its copy.
+
+### Feature scale mismatch between training and live inference
+**Wrong**: in `_build_feature_row()`, computing `Price_change_Xd` as `close.pct_change(X).iloc[idx]` — this returns a ratio (e.g. 0.02).
+**Why it fails**: the training scripts compute the same feature as `pct_change() * 100` (percentage, e.g. 2.0). The StandardScaler was fit on ×100 values. Feeding raw ratios at inference means the input is 100× out of distribution — the agent receives a 0.02 where it was trained to expect 2.0, causing systematic wrong predictions.
+**Right**: always multiply by 100 to match training: `float(close.pct_change(X).iloc[idx]) * 100`. Same applies to `Volatility_Xd` features. The ×100 convention is used everywhere in training scripts and must be matched exactly at inference.
+
 ### Feature multicollinearity in tree models (max-2-per-family rule)
 **Wrong**: including RSI_7, RSI_14, RSI_21 in the same model. All three carry essentially the same signal -- fast/slow RSI. The tree wastes splits arbitrating between them.
 **Right**: pick at most 2 periods per indicator family. For RSI: 7 (fast) and 14 (standard). Drop RSI_21. Same logic applies to ATR (only ATR_14), CCI (only CCI_14), Volatility (5d and 20d only). Also drop indicators that are conceptual duplicates of others already present: WILLR (same idea as STOCH), ROC and MOM (same idea as Price_change). See Section 3.9 for the full rationale.
@@ -1265,7 +1292,7 @@ far fewer parameters and faster training.
 
 Tree models trained on absolute prices learn price levels ("$150 is normal")
 instead of direction. AAPL ranged from $50 to $300 in our data — models memorize
-the mean. Predicting `pct_change(3).shift(-3)*100` (3-day % return) makes the
+the mean. Predicting `pct_change(1).shift(-1)*100` (1-day % return) makes the
 target scale-invariant. MAE dropped from $18 to $3 — 6× improvement in price
 prediction accuracy.
 
