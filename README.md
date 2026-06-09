@@ -138,3 +138,6 @@ See [LEARN.md](LEARN.md) for the complete study guide including FAQ (Section 23)
 - **NumPy PPO full backprop**: all layer gradients (W1/W2/W3 + value head) are computed from pre-update weights before any weight is modified; corrupted ordering would break hidden-layer learning
 - **Signal dtype**: signals stored as `int` for vote counting, cast to `float` only when appended to the numpy state vector -- prevents silent `float.count()` equality bugs
 - **Directional consensus (n_dir not n_agree)**: consensus filter counts models voting FOR the chosen direction, not the global max across both sides; `n_agree = max(n_long, n_short)` would pass a SHORT trade when 5 models say LONG
+- **Consensus filter skips HOLD**: the directional gate only runs for LONG/SHORT; applying it to HOLD would compute `n_dir = short_count` (meaningless) and could corrupt the confidence of a legitimate HOLD decision
+- **REWARD_NO_CONSENSUS named constant**: all penalty values are named constants (`REWARD_TP`, `REWARD_SL`, `REWARD_TIMEOUT`, `REWARD_NO_CONSENSUS`); no magic literals in the reward function
+- **outcomes dict tracks NO_CONSENSUS**: `train_ppo()` initialises `outcomes` with `'NO_CONSENSUS': 0` (not the dead `'NEUTRAL'` key) so blocked low-consensus entries are counted correctly in the training summary

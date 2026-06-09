@@ -54,12 +54,13 @@ ACTION_LONG  = 0
 ACTION_SHORT = 1
 ACTION_HOLD  = 2
 
-REWARD_TP    =  1.5    # reward when take profit is hit (TP=1.5 vs SL=1.0 → 1.5:1 ratio)
-REWARD_SL    = -1.0    # reward when stop loss is hit
-REWARD_HOLD  =  0.0    # no penalty for holding — only hold when truly uncertain
-MAX_DAYS     =  15     # episode horizon (next-day prediction, 15 steps max)
-REWARD_TIMEOUT = -0.3   # penalty for unresolved trades: forces decisive entries
-MIN_RECORDS  =  150    # minimum rows needed to run agent (1yr ≈ 200 rows after dropna)
+REWARD_TP           =  1.5    # reward when take profit is hit (TP=1.5 vs SL=1.0 → 1.5:1 ratio)
+REWARD_SL           = -1.0    # reward when stop loss is hit
+REWARD_HOLD         =  0.0    # no penalty for holding — only hold when truly uncertain
+MAX_DAYS            =  15     # episode horizon (next-day prediction, 15 steps max)
+REWARD_TIMEOUT      = -0.3    # penalty for unresolved trades: forces decisive entries
+REWARD_NO_CONSENSUS = -0.5    # penalty for low-consensus entries: mirrors inference filter
+MIN_RECORDS         =  150    # minimum rows needed to run agent (1yr ≈ 200 rows after dropna)
 
 
 # ---------------------------------------------------------------------------
@@ -904,7 +905,7 @@ class TradingEnv:
             self.day += 1
             done  = (self.day >= MAX_DAYS - 1)
             self.state = self._make_state()
-            return self.state, -0.5, done, {'outcome': 'NO_CONSENSUS', 'days': self.day}
+            return self.state, REWARD_NO_CONSENSUS, done, {'outcome': 'NO_CONSENSUS', 'days': self.day}
 
         # Regime-aligned reward shaping
         regime_bonus = 0.0
@@ -1052,7 +1053,7 @@ def train_ppo(env, policy, n_episodes=2000, batch_size=128, gamma=0.99):
     print(f"  Training PPO agent ({n_episodes} episodes)...")
 
     ep_rewards = []
-    outcomes   = {'TP': 0, 'SL': 0, 'HOLD': 0, 'TIMEOUT': 0, 'NEUTRAL': 0}
+    outcomes   = {'TP': 0, 'SL': 0, 'HOLD': 0, 'TIMEOUT': 0, 'NO_CONSENSUS': 0}
 
     buf_states    = []
     buf_actions   = []
@@ -1146,21 +1147,23 @@ def backtest(env, policy, n_episodes=None):
             action, prob, _ = policy.act_greedy(state)
             # The consensus filter is already encoded in the reward during training.
             # At backtest/inference we apply it as a hard gate to match live behaviour.
-            row = env.signals_df.iloc[env.ep_idx]
-            signals_raw = [int(row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
-            n_dir = signals_raw.count(1) if action == ACTION_LONG else signals_raw.count(-1)
-            reg   = float(row.get('regime', 0))
-            if not (
-                n_dir >= 5 or
-                (n_dir >= 4 and (
-                    (action == ACTION_LONG  and reg > -0.5) or
-                    (action == ACTION_SHORT and reg <  0.5))) or
-                (n_dir >= 3 and (
-                    (action == ACTION_LONG  and reg >  0.0) or
-                    (action == ACTION_SHORT and reg <  0.0)))
-            ):
-                action = ACTION_HOLD
-                prob   = 0.3
+            # HOLD needs no directional check — only LONG/SHORT can fail consensus.
+            if action != ACTION_HOLD:
+                row = env.signals_df.iloc[env.ep_idx]
+                signals_raw = [int(row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
+                n_dir = signals_raw.count(1) if action == ACTION_LONG else signals_raw.count(-1)
+                reg   = float(row.get('regime', 0))
+                if not (
+                    n_dir >= 5 or
+                    (n_dir >= 4 and (
+                        (action == ACTION_LONG  and reg > -0.5) or
+                        (action == ACTION_SHORT and reg <  0.5))) or
+                    (n_dir >= 3 and (
+                        (action == ACTION_LONG  and reg >  0.0) or
+                        (action == ACTION_SHORT and reg <  0.0)))
+                ):
+                    action = ACTION_HOLD
+                    prob   = 0.3
             state, reward, done, info = env.step(action)
             total_r += reward
         trades.append({
@@ -1282,27 +1285,29 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False, current_pri
     tp_dist = 1.5 * atr
 
     # Multi-tier consensus: models agreeing WITH the chosen direction (not just max side)
+    # Only applied to LONG/SHORT — HOLD needs no directional check.
     position_size = 1.0
-    signals_raw = [int(last_row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
-    n_dir  = signals_raw.count(1) if action == ACTION_LONG else signals_raw.count(-1)
-    regime = float(last_row.get('regime', 0))
+    if action != ACTION_HOLD:
+        signals_raw = [int(last_row.get(f'{name}_signal', 0)) for name in MODEL_NAMES]
+        n_dir  = signals_raw.count(1) if action == ACTION_LONG else signals_raw.count(-1)
+        regime = float(last_row.get('regime', 0))
 
-    if n_dir >= 5:
-        position_size = 1.0     # strong directional consensus, always trade
-    elif n_dir >= 4 and (
-        (action == ACTION_LONG and regime > -0.5) or
-        (action == ACTION_SHORT and regime < 0.5)):
-        prob = prob * 0.85
-        position_size = 0.75    # good consensus, regime-aware
-    elif n_dir >= 3 and (
-        (action == ACTION_LONG and regime > 0) or
-        (action == ACTION_SHORT and regime < 0)):
-        prob = prob * 0.6
-        position_size = 0.5     # marginal, must align with regime
-    else:
-        action = ACTION_HOLD
-        prob = 0.3
-        position_size = 0.0     # not enough directional agreement — skip
+        if n_dir >= 5:
+            position_size = 1.0     # strong directional consensus, always trade
+        elif n_dir >= 4 and (
+            (action == ACTION_LONG and regime > -0.5) or
+            (action == ACTION_SHORT and regime < 0.5)):
+            prob = prob * 0.85
+            position_size = 0.75    # good consensus, regime-aware
+        elif n_dir >= 3 and (
+            (action == ACTION_LONG and regime > 0) or
+            (action == ACTION_SHORT and regime < 0)):
+            prob = prob * 0.6
+            position_size = 0.5     # marginal, must align with regime
+        else:
+            action = ACTION_HOLD
+            prob = 0.3
+            position_size = 0.0     # not enough directional agreement — skip
 
     if action == ACTION_LONG:
         sl = close - sl_dist

@@ -1224,6 +1224,21 @@ This ensures the correct `libomp` is resident before PyTorch loads its copy.
 **Wrong**: storing model signals as `float` in the `signals` list (`sig = float(...)`), then calling `signals.count(1)`. This works by accident because Python `1.0 == 1`, but it silently breaks if a stored value is `0.9999` due to floating-point arithmetic.
 **Right**: store signals as `int` (`sig = int(...)`) and append `float(sig)` to the state array. The int list is used for `count(1)` / `count(-1)` vote tallying; the float conversion is applied only when building the numpy state vector. This convention must be consistent across `build_state()`, `TradingEnv.step()`, `backtest()`, and `get_current_action()`.
 
+### Consensus filter applied to HOLD action
+**Wrong**: running the multi-tier consensus check unconditionally regardless of the chosen action. When `action == ACTION_HOLD`, `n_dir = signals_raw.count(-1)` (the SHORT vote count), which is nonsensical for a HOLD decision. Worse, if `n_dir < 3`, the branch overwrites `action = ACTION_HOLD` with `prob = 0.3` — for a trade that was already HOLD. The probability of a HOLD that was picked by the policy gets corrupted.
+**Why it fails**: HOLD has no direction. Applying a directional consensus gate to it is a category error and can silently modify the confidence score of a legitimate HOLD.
+**Right**: guard every consensus check with `if action != ACTION_HOLD`. The filter gates LONG/SHORT entries; it must never run for HOLD. This applies in both `backtest()` and `get_current_action()`.
+
+### NO_CONSENSUS outcome missing from train_ppo() outcomes dict
+**Wrong**: `outcomes = {'TP': 0, 'SL': 0, 'HOLD': 0, 'TIMEOUT': 0, 'NEUTRAL': 0}`. The `TradingEnv.step()` method returns `outcome = 'NO_CONSENSUS'` when an entry is blocked by the consensus filter, but `'NO_CONSENSUS'` was never in the initial dict. Calling `outcomes.get('NO_CONSENSUS', 0)` would always return 0 and the key would never be populated.
+**Why it fails**: the `'NEUTRAL'` key was a dead placeholder (no code path ever returns `outcome='NEUTRAL'`). The missing `'NO_CONSENSUS'` key means the training summary always shows `NO_CONSENSUS=0` regardless of how many entries were blocked.
+**Right**: `outcomes = {'TP': 0, 'SL': 0, 'HOLD': 0, 'TIMEOUT': 0, 'NO_CONSENSUS': 0}`.
+
+### Hardcoded NO_CONSENSUS reward instead of named constant
+**Wrong**: `return self.state, -0.5, done, {'outcome': 'NO_CONSENSUS', ...}` — `-0.5` is an unnamed magic literal. All other rewards (`REWARD_TP`, `REWARD_SL`, `REWARD_TIMEOUT`, `REWARD_HOLD`) use named module-level constants, but NO_CONSENSUS did not.
+**Why it fails**: if someone tunes `REWARD_SL` from `-1.0` to `-0.8`, they would expect all negative rewards to be in one place. A magic literal is invisible during that tuning pass.
+**Right**: define `REWARD_NO_CONSENSUS = -0.5` alongside the other constants and use `REWARD_NO_CONSENSUS` in `TradingEnv.step()`.
+
 ### Feature multicollinearity in tree models (max-2-per-family rule)
 **Wrong**: including RSI_7, RSI_14, RSI_21 in the same model. All three carry essentially the same signal -- fast/slow RSI. The tree wastes splits arbitrating between them.
 **Right**: pick at most 2 periods per indicator family. For RSI: 7 (fast) and 14 (standard). Drop RSI_21. Same logic applies to ATR (only ATR_14), CCI (only CCI_14), Volatility (5d and 20d only). Also drop indicators that are conceptual duplicates of others already present: WILLR (same idea as STOCH), ROC and MOM (same idea as Price_change). See Section 3.9 for the full rationale.
