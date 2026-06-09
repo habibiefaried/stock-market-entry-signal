@@ -260,7 +260,6 @@ def load_model_predictions(csv_file):
 
     df_raw = compute_indicators(df_raw).reset_index(drop=True)
 
-    base_dir = os.path.dirname(os.path.abspath(__file__))
     ticker = os.path.basename(csv_file).split('_')[0]
 
     # Import model_store for MODELS/ path resolution
@@ -309,10 +308,8 @@ def load_model_predictions(csv_file):
         print("  No pkl models found - using synthetic signal generation for demonstration")
         return _synthetic_signals(df_raw)
 
-    # Walk-forward: use the same 90/10 split as training so the RL agent
-    # only ever sees out-of-sample model predictions.
-    # Cap the warmup floor at 70% of n so short histories (1yr ≈ 200 rows)
-    # still leave at least ~20 signal rows for RL training.
+    # Walk-forward warmup at 70% (floor 50%) so short histories still leave
+    # enough signal rows for RL training while keeping predictions out-of-sample.
     n        = len(df_raw)
     warmup   = min(int(n * 0.7), max(int(n * 0.5), 50))
     records  = []
@@ -538,9 +535,9 @@ def _synthetic_signals(df_raw):
 MODEL_NAMES = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy',
                'randomforest', 'randomforest_heavy', 'catboost_bayes']
 
-def build_state(row, days_in_trade=0, unrealized_pnl_atr=0.0, in_trade=0.0):
+def build_state(row, days_in_trade=0):
     """
-    State vector (35 dims):
+    State vector (33 dims):
       7 model signals    (encoded: LONG=1, SHORT=-1, HOLD=0)
       7 model probs      (0..1)
       RSI_14 normalised  (-1..1 mapped from 0..100)
@@ -562,9 +559,7 @@ def build_state(row, days_in_trade=0, unrealized_pnl_atr=0.0, in_trade=0.0):
       Avg model prob     (confidence)
       Consensus vote     (1=LONG, -1=SHORT, 0=HOLD)
       High-confidence %  (fraction of models with prob > 0.7)
-      In-trade flag      (0=not in trade, 1=in trade)
-      Days in trade      (normalized 0..1 over MAX_DAYS)
-      Unrealized P&L     (in ATR units, clipped ±3)
+      Days elapsed       (normalized 0..1 over MAX_DAYS — countdown pressure for HOLD)
     """
     state = []
 
@@ -635,10 +630,10 @@ def build_state(row, days_in_trade=0, unrealized_pnl_atr=0.0, in_trade=0.0):
     high_conf_count = sum(1 for p in probs if p > 0.7)
     state.append(high_conf_count / len(probs))
 
-    # Position context: lets agent learn time-based and P&L-based exit rules
-    state.append(float(in_trade))
+    # Days elapsed: countdown pressure (useful for HOLD decisions within an episode)
+    # Note: in_trade and unrealized_pnl_atr are not included — each episode is a single
+    # step trade simulation so those values would always be 0 when the policy acts.
     state.append(float(days_in_trade) / MAX_DAYS)
-    state.append(float(np.clip(unrealized_pnl_atr, -3.0, 3.0)))
 
     state_array = np.array(state, dtype=np.float32)
     state_array = np.nan_to_num(state_array, nan=0.0, posinf=1.0, neginf=-1.0)
@@ -647,7 +642,7 @@ def build_state(row, days_in_trade=0, unrealized_pnl_atr=0.0, in_trade=0.0):
     return state_array
 
 
-STATE_DIM  = 35   # state: 7×2 signals+probs + 19 market + 2 agreement + 3 position context
+STATE_DIM  = 33   # state: 7×2 signals+probs + 19 market + 4 new indicators + 3 agreement + 1 days
 ACTION_DIM = 3    # LONG, SHORT, HOLD
 
 
@@ -821,11 +816,6 @@ class PPOPolicy:
                 # Value loss
                 value_loss = 0.5 * (ret - value) ** 2
 
-                # Entropy bonus (increased to encourage exploration)
-                entropy = -np.sum(probs * np.log(probs + 1e-10))
-
-                loss = policy_loss + value_loss - entropy_coef * entropy
-
                 # Improved gradient: use advantage sign and magnitude
                 grad_logits = probs.copy()
                 grad_logits[a] -= 1.0
@@ -866,31 +856,15 @@ class TradingEnv:
         self.reset()
 
     def _make_state(self):
-        row = self.signals_df.iloc[self.ep_idx]
-        close = float(row['close'])
-        atr   = max(float(row.get('atr', 0.0)), 0.01 * close)
-        unrealized = (self._current_price - self._entry) / (atr + 1e-10)
-        if self._action == ACTION_SHORT:
-            unrealized = -unrealized
-        return build_state(
-            row,
-            days_in_trade=self.day,
-            unrealized_pnl_atr=unrealized if self._in_trade else 0.0,
-            in_trade=1.0 if self._in_trade else 0.0,
-        )
+        return build_state(self.signals_df.iloc[self.ep_idx], days_in_trade=self.day)
 
     def reset(self, idx=None):
         if idx is None:
             self.ep_idx = np.random.randint(0, self.n_episodes)
         else:
             self.ep_idx = idx
-        self.day           = 0
-        self._action       = None
-        self._in_trade     = False
-        row                = self.signals_df.iloc[self.ep_idx]
-        self._entry        = float(row['close'])
-        self._current_price = self._entry
-        self.state         = self._make_state()
+        self.day   = 0
+        self.state = self._make_state()
         return self.state
 
     def step(self, action):
@@ -908,7 +882,6 @@ class TradingEnv:
         regime  = float(row.get('regime', 0))
 
         if action == ACTION_HOLD:
-            self._in_trade = False
             self.day += 1
             done  = (self.day >= MAX_DAYS - 1)
             self.state = self._make_state()
@@ -926,7 +899,6 @@ class TradingEnv:
                 (action == ACTION_SHORT and regime <  0.0)))
         )
         if not consensus_ok:
-            self._in_trade = False
             self.day += 1
             done  = (self.day >= MAX_DAYS - 1)
             self.state = self._make_state()
@@ -940,10 +912,7 @@ class TradingEnv:
             regime_bonus =  0.3   # with the trend
 
         # LONG or SHORT — simulate outcome using intraday H/L for realistic SL checks
-        self._action    = action
-        self._in_trade  = True
-        self._entry     = close
-        entry           = close
+        entry = close
         futures_close   = self.lookahead_prices.get(self.ep_idx, [])
         futures_hl      = self.lookahead_hl.get(self.ep_idx, [])
 
@@ -962,7 +931,6 @@ class TradingEnv:
         for d in range(min(len(futures_close), MAX_DAYS)):
             days_out = d + 1
             fp = futures_close[d]
-            self._current_price = fp
 
             # Use intraday high/low when available for realistic TP/SL detection
             if d < len(futures_hl):
@@ -999,7 +967,6 @@ class TradingEnv:
             outcome = 'TIMEOUT'
             reward  = REWARD_TIMEOUT + regime_bonus
 
-        self._in_trade = False
         self.day += 1
         self.state = self._make_state()
 
@@ -1365,8 +1332,6 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
     print("RL AGENT TRADER - PPO META-AGENT")
     print("="*70)
 
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-
     if not os.path.exists(csv_file):
         print(f"Error: File {csv_file} not found")
         sys.exit(1)
@@ -1442,16 +1407,25 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
     if existing_weights is not None:
         try:
             if existing_kind == 'torch' and TORCH_AVAILABLE:
-                policy.load_state_dict(torch.load(existing_weights))
-                print(f"  Warm-started from {os.path.basename(existing_weights)}")
+                saved = torch.load(existing_weights, map_location='cpu')
+                # Check first layer shape matches current STATE_DIM before loading
+                saved_dim = next(iter(saved.values())).shape[-1] if saved else None
+                if saved_dim is not None and saved_dim != STATE_DIM:
+                    print(f"  Skipping warm-start: saved STATE_DIM={saved_dim} != current {STATE_DIM}")
+                else:
+                    policy.load_state_dict(saved)
+                    print(f"  Warm-started from {os.path.basename(existing_weights)}")
             elif existing_kind == 'numpy' and not TORCH_AVAILABLE:
                 w = np.load(existing_weights)
-                policy.W1 = w['W1']; policy.b1 = w['b1']
-                policy.W2 = w['W2']; policy.b2 = w['b2']
-                policy.W3 = w['W3']; policy.b3 = w['b3']
-                policy.Wv1 = w['Wv1']; policy.bv1 = w['bv1']
-                policy.Wv2 = w['Wv2']; policy.bv2 = w['bv2']
-                print(f"  Warm-started from {os.path.basename(existing_weights)}")
+                if w['W1'].shape[0] != STATE_DIM:
+                    print(f"  Skipping warm-start: saved STATE_DIM={w['W1'].shape[0]} != current {STATE_DIM}")
+                else:
+                    policy.W1 = w['W1']; policy.b1 = w['b1']
+                    policy.W2 = w['W2']; policy.b2 = w['b2']
+                    policy.W3 = w['W3']; policy.b3 = w['b3']
+                    policy.Wv1 = w['Wv1']; policy.bv1 = w['bv1']
+                    policy.Wv2 = w['Wv2']; policy.bv2 = w['bv2']
+                    print(f"  Warm-started from {os.path.basename(existing_weights)}")
         except Exception as e:
             print(f"  Could not load saved weights: {e}")
 
@@ -1465,7 +1439,8 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
     print(f"  Episodes planned: {n_ep}  (estimated time: ~{est_sec}-{est_sec*2} seconds)")
     ep_rewards, outcomes = train_ppo(train_env, policy, n_episodes=n_ep)
     print(f"  Training outcomes: TP={outcomes.get('TP',0)} SL={outcomes.get('SL',0)} "
-          f"HOLD={outcomes.get('HOLD',0)} TIMEOUT={outcomes.get('TIMEOUT',0)}")
+          f"HOLD={outcomes.get('HOLD',0)} TIMEOUT={outcomes.get('TIMEOUT',0)} "
+          f"NO_CONSENSUS={outcomes.get('NO_CONSENSUS',0)}")
 
     # Persist weights for warm-start on next run with same CSV
     try:
