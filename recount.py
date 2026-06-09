@@ -48,7 +48,7 @@ from agent_trader import (
     ACTION_SHORT,
     ACTION_HOLD,
 )
-from model_store import MODEL_DIR, find_latest_prefix
+from model_store import MODEL_DIR, find_latest_prefix, find_latest_rl_weights
 
 # ---------------------------------------------------------------------------
 # CONSTANTS
@@ -199,28 +199,34 @@ def predict_all_models(loaded_models, df_indicators):
 # ---------------------------------------------------------------------------
 
 def load_rl_policy(ticker):
-    """Load the trained RL agent policy for a specific ticker."""
-    torch_path = os.path.join(MODEL_DIR, f'{ticker}_rl_agent_torch.pt')
-    numpy_path = os.path.join(MODEL_DIR, f'{ticker}_rl_agent_weights.npz')
+    """Load the latest dated RL agent policy for a specific ticker."""
+    weights_path, kind = find_latest_rl_weights(ticker)
 
-    if TORCH_AVAILABLE and os.path.exists(torch_path):
-        print("  Loading PyTorch RL policy...")
-        policy = PPOPolicyTorch(state_dim=STATE_DIM, hidden=128)
-        policy.load_state_dict(__import__('torch').load(torch_path))
-        policy.eval()
-        return policy, 'torch'
-    elif os.path.exists(numpy_path):
-        print("  Loading NumPy RL policy...")
-        policy = PPOPolicy(state_dim=STATE_DIM)
-        w = np.load(numpy_path)
-        policy.W1 = w['W1']; policy.b1 = w['b1']
-        policy.W2 = w['W2']; policy.b2 = w['b2']
-        policy.W3 = w['W3']; policy.b3 = w['b3']
-        policy.Wv1 = w['Wv1']; policy.bv1 = w['bv1']
-        policy.Wv2 = w['Wv2']; policy.bv2 = w['bv2']
-        return policy, 'numpy'
-    else:
+    if weights_path is None:
         print("  Warning: No RL policy found — using voting fallback")
+        return None, None
+
+    print(f"  Loading RL policy: {os.path.basename(weights_path)}")
+    try:
+        if kind == 'torch' and TORCH_AVAILABLE:
+            policy = PPOPolicyTorch(state_dim=STATE_DIM, hidden=128)
+            policy.load_state_dict(__import__('torch').load(weights_path))
+            policy.eval()
+            return policy, 'torch'
+        elif kind == 'numpy':
+            policy = PPOPolicy(state_dim=STATE_DIM)
+            w = np.load(weights_path)
+            policy.W1 = w['W1']; policy.b1 = w['b1']
+            policy.W2 = w['W2']; policy.b2 = w['b2']
+            policy.W3 = w['W3']; policy.b3 = w['b3']
+            policy.Wv1 = w['Wv1']; policy.bv1 = w['bv1']
+            policy.Wv2 = w['Wv2']; policy.bv2 = w['bv2']
+            return policy, 'numpy'
+        else:
+            print(f"  Warning: RL weights are {kind} but PyTorch not available — using voting fallback")
+            return None, None
+    except Exception as e:
+        print(f"  Warning: Could not load RL policy ({e}) — using voting fallback")
         return None, None
 
 

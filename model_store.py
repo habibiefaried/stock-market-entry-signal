@@ -75,6 +75,32 @@ def find_latest_prefix(ticker):
     return f'{ticker}_{latest}_', latest
 
 
+def find_latest_rl_weights(ticker):
+    """
+    Return (weights_path, kind) for the newest RL agent weights for *ticker*.
+    kind is 'torch' (.pt) or 'numpy' (.npz). Returns (None, None) if not found.
+    Filenames follow <TICKER>_<YYYYMMDD>_rl_agent_torch.pt convention.
+    """
+    def _latest(files):
+        dated = []
+        for f in files:
+            parts = os.path.basename(f).split('_')
+            if len(parts) >= 2 and len(parts[1]) == 8 and parts[1].isdigit():
+                dated.append((parts[1], f))
+        return sorted(dated)[-1][1] if dated else None
+
+    torch_matches = glob.glob(os.path.join(MODEL_DIR, f'{ticker}_*_rl_agent_torch.pt'))
+    numpy_matches = glob.glob(os.path.join(MODEL_DIR, f'{ticker}_*_rl_agent_weights.npz'))
+
+    t = _latest(torch_matches)
+    if t:
+        return t, 'torch'
+    n = _latest(numpy_matches)
+    if n:
+        return n, 'numpy'
+    return None, None
+
+
 def cleanup_old_stock_files(ticker, keep_date=None):
     """
     Remove all MODELS/ files for *ticker* except those containing *keep_date*.

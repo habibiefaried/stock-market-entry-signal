@@ -1349,39 +1349,38 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
     # Use PyTorch if available (3x better performance)
     from model_store import MODEL_DIR, ensure_model_dir
     ensure_model_dir()
+    date_str = datetime.now().strftime('%Y%m%d')
     if TORCH_AVAILABLE:
         print("  Using PyTorch PPO (improved gradients)")
         torch.manual_seed(42)
         policy = PPOPolicyTorch(state_dim=STATE_DIM, hidden=128, lr=5e-5)
-        weights_file = os.path.join(MODEL_DIR, f'{ticker}_rl_agent_torch.pt')
-        csv_hash_file = os.path.join(MODEL_DIR, f'{ticker}_rl_agent_torch_hash.txt')
+        weights_file  = os.path.join(MODEL_DIR, f'{ticker}_{date_str}_rl_agent_torch.pt')
+        csv_hash_file = os.path.join(MODEL_DIR, f'{ticker}_{date_str}_rl_agent_torch_hash.txt')
     else:
         print("  Using NumPy PPO (install torch for better performance)")
         policy = PPOPolicy(state_dim=STATE_DIM)
-        weights_file = os.path.join(MODEL_DIR, f'{ticker}_rl_agent_weights.npz')
-        csv_hash_file = os.path.join(MODEL_DIR, f'{ticker}_rl_agent_csv_hash.txt')
+        weights_file  = os.path.join(MODEL_DIR, f'{ticker}_{date_str}_rl_agent_weights.npz')
+        csv_hash_file = os.path.join(MODEL_DIR, f'{ticker}_{date_str}_rl_agent_csv_hash.txt')
 
     train_env = TradingEnv(train_sig, train_la)
 
-    # Warm-start from saved weights if they exist
+    # Warm-start from latest saved weights for this ticker (any date)
+    from model_store import find_latest_rl_weights
+    existing_weights, existing_kind = find_latest_rl_weights(ticker)
     csv_hash = str(os.path.getsize(csv_file)) + '_' + str(n_records)
-    if os.path.exists(weights_file) and os.path.exists(csv_hash_file):
+    if existing_weights is not None:
         try:
-            with open(csv_hash_file) as fh:
-                saved_hash = fh.read().strip()
-            if saved_hash == csv_hash:
-                if TORCH_AVAILABLE:
-                    policy.load_state_dict(torch.load(weights_file))
-                else:
-                    w = np.load(weights_file)
-                    policy.W1 = w['W1']; policy.b1 = w['b1']
-                    policy.W2 = w['W2']; policy.b2 = w['b2']
-                    policy.W3 = w['W3']; policy.b3 = w['b3']
-                    policy.Wv1 = w['Wv1']; policy.bv1 = w['bv1']
-                    policy.Wv2 = w['Wv2']; policy.bv2 = w['bv2']
-                print("  Warm-started from saved weights (same CSV)")
-            else:
-                print("  CSV changed - training from scratch")
+            if existing_kind == 'torch' and TORCH_AVAILABLE:
+                policy.load_state_dict(torch.load(existing_weights))
+                print(f"  Warm-started from {os.path.basename(existing_weights)}")
+            elif existing_kind == 'numpy' and not TORCH_AVAILABLE:
+                w = np.load(existing_weights)
+                policy.W1 = w['W1']; policy.b1 = w['b1']
+                policy.W2 = w['W2']; policy.b2 = w['b2']
+                policy.W3 = w['W3']; policy.b3 = w['b3']
+                policy.Wv1 = w['Wv1']; policy.bv1 = w['bv1']
+                policy.Wv2 = w['Wv2']; policy.bv2 = w['bv2']
+                print(f"  Warm-started from {os.path.basename(existing_weights)}")
         except Exception as e:
             print(f"  Could not load saved weights: {e}")
 
