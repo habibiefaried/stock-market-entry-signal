@@ -497,8 +497,6 @@ def _synthetic_signals(df_raw):
             (rsi - 50) / 50 * 0.6 + tr * 0.8 + noise[6],
         ]
 
-        names = ['xgboost', 'xgboost_heavy', 'lightgbm', 'lightgbm_heavy',
-                 'randomforest', 'randomforest_heavy', 'catboost_bayes']
         row   = {
             'date':              df_raw['Date'].iloc[i] if 'Date' in df_raw.columns else i,
             'close':             df_raw['Close'].iloc[i],
@@ -519,7 +517,7 @@ def _synthetic_signals(df_raw):
             'dpo':               df_raw['DPO_20'].iloc[i],
             'actual_next_close': df_raw['Close'].iloc[i + 1],
         }
-        for name, score in zip(names, scores):
+        for name, score in zip(MODEL_NAMES, scores):
             row[f'{name}_signal'] = _synthetic_sig(score)
             row[f'{name}_prob']   = _synthetic_prob(score)
 
@@ -559,7 +557,7 @@ def build_state(row, days_in_trade=0):
       Avg model prob     (confidence)
       Consensus vote     (1=LONG, -1=SHORT, 0=HOLD)
       High-confidence %  (fraction of models with prob > 0.7)
-      Days elapsed       (normalized 0..1 over MAX_DAYS — countdown pressure for HOLD)
+      Days elapsed       (normalized 0..1 over MAX_DAYS - countdown pressure for HOLD)
     """
     state = []
 
@@ -719,8 +717,9 @@ if TORCH_AVAILABLE:
             returns = torch.FloatTensor(returns)
             advantages = torch.FloatTensor(advantages)
 
-            # Normalize advantages
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            # Normalize advantages (guard against n=1: PyTorch std(ddof=1) returns NaN for 1-element tensors)
+            if advantages.numel() > 1:
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
             for _ in range(n_epochs):
                 probs, values = self.forward(states)
@@ -1101,7 +1100,7 @@ def train_ppo(env, policy, n_episodes=2000, batch_size=128, gamma=0.99):
             ep_rew += reward
             state   = next_state
 
-        outcome = info.get('outcome', 'NEUTRAL')
+        outcome = info.get('outcome', 'HOLD')
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
 
         returns    = compute_returns(ep_rewards_, gamma)

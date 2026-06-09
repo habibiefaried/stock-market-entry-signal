@@ -1,9 +1,9 @@
 """
-Stock Ranking Tool — ranks target stocks by agent confidence and win probability.
+Stock Ranking Tool - ranks target stocks by agent confidence and win probability.
 
 Reads `target_stock.txt`, runs the full pipeline (models + RL agent) on each
 ticker, then produces `stock-ranking-result.txt` sorted by expected value
-(confidence × winrate → highest probability of hitting TP).
+(confidence x winrate - highest probability of hitting TP).
 
 Usage:
     python rank_stocks.py
@@ -107,7 +107,7 @@ def main():
 
     lines = []
     lines.append("=" * 70)
-    lines.append("STOCK RANKING — MOST CONFIDENT TO LEAST CONFIDENT")
+    lines.append("STOCK RANKING - MOST CONFIDENT TO LEAST CONFIDENT")
     lines.append(f"Generated: {now}  |  Data: {args.months} months")
     lines.append(f"TP=1.5 ATR  |  SL=1.0 ATR  |  Ratio 1.5:1  |  Break-even 40%  |  Production SL/TP match training")
     lines.append("=" * 70)

@@ -1253,6 +1253,23 @@ This ensures the correct `libomp` is resident before PyTorch loads its copy.
 **Wrong**: using `—` (U+2014 EM DASH) in print strings in `recount.py`, `rank_stocks.py`, and `train_catboost_bayes.py`. This crashes on ASCII-only terminals and CI environments.
 **Right**: replace with plain ASCII ` - ` (space-hyphen-space). All print strings must be ASCII-only. Check all files, not just `agent_trader.py`.
 
+### PyTorch advantage normalization NaN with 1-element batch
+**Wrong**: `advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)` when `advantages` is a 1-element tensor. PyTorch's `std()` uses Bessel correction (ddof=1) and returns `nan` for a single-element tensor. `nan` propagates through the entire backward pass, silently corrupting all network weights.
+**Why it fails**: if a batch contains only one episode (possible when `n_episodes - 1` triggers the final flush and only one episode was accumulated), `advantages.std()` returns NaN. `nan + 1e-8 = nan`, so the division produces NaN advantages, NaN loss, and NaN gradients in every parameter.
+**Right**: guard with `if advantages.numel() > 1:` before normalizing. Skip normalization for trivial batches; the gradient is still correct, just not rescaled.
+
+### _synthetic_signals() hardcodes MODEL_NAMES instead of referencing the constant
+**Wrong**: `names = ['xgboost', 'xgboost_heavy', ...]` duplicated inline. If `MODEL_NAMES` is updated (a model added or renamed), the synthetic fallback silently uses a stale list with wrong column names. The signals DataFrame gets different column names from what the rest of the code expects.
+**Right**: reference `MODEL_NAMES` directly: `for name, score in zip(MODEL_NAMES, scores)`. The inline `names` variable was a dead duplicate.
+
+### Stale 'NEUTRAL' fallback in train_ppo() outcome tracking
+**Wrong**: `outcome = info.get('outcome', 'NEUTRAL')`. After renaming the outcome dict key from `'NEUTRAL'` to `'NO_CONSENSUS'`, the fallback default was left as `'NEUTRAL'`. Any episode where `info` is unexpectedly missing `'outcome'` would silently create a new `'NEUTRAL'` key in outcomes via `outcomes.get(outcome, 0) + 1` -- but the `outcomes` dict has no `'NEUTRAL'` key so that count is lost.
+**Right**: `outcome = info.get('outcome', 'HOLD')`. HOLD is the safest fallback -- it exists in the dict and its count being off by one is far less misleading than a ghost key.
+
+### Non-ASCII in string literals (docstrings, argparse descriptions)
+**Wrong**: using em-dash (`--`) or `x`/`->` symbols (Unicode) in docstrings, argparse `description=`, or values written to output files. These are actual string literals that go through Python's codec -- if the terminal or file encoding is ASCII-only, they crash or display as garbage.
+**Right**: use plain ASCII throughout all string literals, not just `print()` calls. Check with an AST walk over `ast.Constant` nodes, not just a grep for `print(`. Affected files this round: `agent_trader.py` docstring, `train_randomforest_heavy.py` module docstring, `train_catboost_bayes.py` module docstring, `recount.py` argparse description and function docstring, `rank_stocks.py` module docstring and output string.
+
 ### Feature multicollinearity in tree models (max-2-per-family rule)
 **Wrong**: including RSI_7, RSI_14, RSI_21 in the same model. All three carry essentially the same signal -- fast/slow RSI. The tree wastes splits arbitrating between them.
 **Right**: pick at most 2 periods per indicator family. For RSI: 7 (fast) and 14 (standard). Drop RSI_21. Same logic applies to ATR (only ATR_14), CCI (only CCI_14), Volatility (5d and 20d only). Also drop indicators that are conceptual duplicates of others already present: WILLR (same idea as STOCH), ROC and MOM (same idea as Price_change). See Section 3.9 for the full rationale.

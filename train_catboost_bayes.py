@@ -1,5 +1,5 @@
 """
-LSTM-BO-CatBoost — hybrid model from Sun & Tian (2023) paper.
+LSTM-BO-CatBoost - hybrid model from Sun & Tian (2023) paper.
 
 Architecture (matching the paper):
   1. Simple 2-layer LSTM (100 units) trained on High, Low, Close

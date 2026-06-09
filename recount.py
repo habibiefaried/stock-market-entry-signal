@@ -1,5 +1,5 @@
 """
-Recount — Live trading prediction using pre-trained models.
+Recount - Live trading prediction using pre-trained models.
 
 Loads all 7 trained models + the RL agent policy, fetches recent market data,
 and produces a BUY/SHORT/HOLD decision with TP/SL levels at the current price.
@@ -235,7 +235,7 @@ def load_rl_policy(ticker):
 # ---------------------------------------------------------------------------
 
 def calculate_tp_sl(close, atr, signal_int):
-    """ATR-based TP/SL — must match TradingEnv.step() and all training scripts."""
+    """ATR-based TP/SL - must match TradingEnv.step() and all training scripts."""
     sl_dist = 1.0 * atr
     tp_dist = 1.5 * atr
 
@@ -480,7 +480,7 @@ def run_recount(ticker, current_price, leverage=5.0, months=12):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Recount — Live trading prediction using pre-trained models',
+        description='Recount - Live trading prediction using pre-trained models',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

@@ -1,17 +1,17 @@
 """
-RandomForest-Heavy — bagging ensemble with heavy computation.
+RandomForest-Heavy - bagging ensemble with heavy computation.
 
 Same proven feature set as light RandomForest (lags + simple derived),
 but with 2500 trees, deeper splits, aggressive bootstrapping, and
 7-fold walk-forward validation for more realistic evaluation.
 
 Key differences from light RF:
-- 2500 trees (vs 1000) — smoother predictions, lower variance
-- Depth 22 (vs 15) — learns more complex patterns
-- max_samples=0.6 — each tree sees only 60% of data → higher diversity
-- 7 walk-forward folds (vs 5) — tests on more market regimes
-- min_samples_leaf=5 — prevents tiny leaf overfitting with deep trees
-- max_features=0.5 — uses half the features per split for decorrelation
+- 2500 trees (vs 1000) - smoother predictions, lower variance
+- Depth 22 (vs 15) - learns more complex patterns
+- max_samples=0.6 - each tree sees only 60% of data, higher diversity
+- 7 walk-forward folds (vs 5) - tests on more market regimes
+- min_samples_leaf=5 - prevents tiny leaf overfitting with deep trees
+- max_features=0.5 - uses half the features per split for decorrelation
 
 Usage:
     python train_randomforest_heavy.py MSFT_daily_data_20260520.csv
