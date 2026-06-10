@@ -336,7 +336,7 @@ def load_model_predictions(csv_file):
 
         # Adaptive threshold matching recount.py and all training scripts
         vol_20d_pct = float(df_raw['Volatility_20d'].iloc[i]) if 'Volatility_20d' in df_raw.columns else 1.0
-        sig_threshold = max(0.15 * vol_20d_pct, 0.1)
+        sig_threshold = max(0.08 * vol_20d_pct, 0.03)  # lowered from 0.15/0.1 to reduce HOLD bias
 
         for name, (mdl, scl, feats) in loaded_models.items():
             try:
@@ -709,7 +709,7 @@ if TORCH_AVAILABLE:
             return action.item(), probs[action].item(), value.item()
 
         def update(self, states, actions, old_log_probs, returns, advantages,
-                   clip_eps=0.2, entropy_coef=0.02, value_coef=0.5, n_epochs=8):
+                   clip_eps=0.2, entropy_coef=0.08, value_coef=0.5, n_epochs=8):
             """Proper PPO update with backpropagation"""
             states = torch.FloatTensor(np.array(states))
             actions = torch.LongTensor(actions)
@@ -797,7 +797,7 @@ class PPOPolicy:
         return action, probs[action], value
 
     def update(self, states, actions, old_log_probs, returns, advantages,
-               clip_eps=0.2, entropy_coef=0.02, n_epochs=6):
+               clip_eps=0.2, entropy_coef=0.08, n_epochs=6):
         """PPO clipped surrogate update with full backprop through all layers."""
         advantages = np.clip(advantages, -2.0, 2.0)
         for _ in range(n_epochs):
@@ -901,11 +901,11 @@ class TradingEnv:
         # Penalise low-consensus entries so the agent learns to skip them,
         # mirroring the hard override applied at inference time.
         consensus_ok = (
-            n_dir >= 5 or
-            (n_dir >= 4 and (
+            n_dir >= 4 or
+            (n_dir >= 3 and (
                 (action == ACTION_LONG  and regime > -0.5) or
                 (action == ACTION_SHORT and regime <  0.5))) or
-            (n_dir >= 3 and (
+            (n_dir >= 2 and (
                 (action == ACTION_LONG  and regime >  0.0) or
                 (action == ACTION_SHORT and regime <  0.0)))
         )
@@ -1162,11 +1162,11 @@ def backtest(env, policy, n_episodes=None):
                 n_dir = signals_raw.count(1) if action == ACTION_LONG else signals_raw.count(-1)
                 reg   = float(row.get('regime', 0))
                 if not (
-                    n_dir >= 5 or
-                    (n_dir >= 4 and (
+                    n_dir >= 4 or
+                    (n_dir >= 3 and (
                         (action == ACTION_LONG  and reg > -0.5) or
                         (action == ACTION_SHORT and reg <  0.5))) or
-                    (n_dir >= 3 and (
+                    (n_dir >= 2 and (
                         (action == ACTION_LONG  and reg >  0.0) or
                         (action == ACTION_SHORT and reg <  0.0)))
                 ):
@@ -1300,14 +1300,14 @@ def get_current_action(signals_df, df_raw, policy, use_voting=False, current_pri
         n_dir  = signals_raw.count(1) if action == ACTION_LONG else signals_raw.count(-1)
         regime = float(last_row.get('regime', 0))
 
-        if n_dir >= 5:
+        if n_dir >= 4:
             position_size = 1.0     # strong directional consensus, always trade
-        elif n_dir >= 4 and (
+        elif n_dir >= 3 and (
             (action == ACTION_LONG and regime > -0.5) or
             (action == ACTION_SHORT and regime < 0.5)):
             prob = prob * 0.85
             position_size = 0.75    # good consensus, regime-aware
-        elif n_dir >= 3 and (
+        elif n_dir >= 2 and (
             (action == ACTION_LONG and regime > 0) or
             (action == ACTION_SHORT and regime < 0)):
             prob = prob * 0.6
@@ -1443,10 +1443,10 @@ def run_agent(csv_file, current_price=None, leverage=1.0):
             print(f"  Could not load saved weights: {e}")
 
     if TORCH_AVAILABLE:
-        # ~50 passes per row, capped at 8K (avoids timeout), floored at 1.5K
-        n_ep = max(min(len(train_sig) * 50, 8000), 1500)
+        # ~100 passes per row, capped at 20K (balances timeout vs exploration), floored at 3K
+        n_ep = max(min(len(train_sig) * 100, 20000), 3000)
     else:
-        n_ep = max(min(len(train_sig) * 30, 5000), 1000)
+        n_ep = max(min(len(train_sig) * 60, 12000), 2000)
 
     # Realistic estimate: ~150 eps/s on CPU with env stepping + batch backprop
     est_sec = max(1, n_ep // 150)
