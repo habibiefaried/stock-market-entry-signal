@@ -21,7 +21,7 @@ def run_pipeline(ticker, months=84):
     result = subprocess.run(
         [sys.executable, os.path.join(base_dir, 'main.py'),
          '--ticker', ticker, '--months', str(months)],
-        capture_output=True, text=True, timeout=900,
+        capture_output=True, text=True, timeout=7200,  # 2h per ticker (full model training + RL agent)
         cwd=base_dir
     )
     # Find the generated HTML report
@@ -40,11 +40,19 @@ def run_pipeline(ticker, months=84):
         m = re.search(pattern, text)
         return float(m.group(1)) if m else 0.0
 
+    # Extract RL agent decision only (not model-level badges)
+    # The RL agent badge is a <div> right after "RL AGENT DECISION" section
+    m = re.search(
+        r'RL AGENT DECISION.*?<div[^>]*>\s*(LONG\s*\(BUY\)|SHORT\s*\(SELL\)|HOLD\s*\(WAIT\))\s*</div>',
+        content, re.DOTALL
+    )
     decision = 'HOLD'
-    if 'LONG (BUY)' in content:
-        decision = 'LONG'
-    elif 'SHORT (SELL)' in content:
-        decision = 'SHORT'
+    if m:
+        badge = m.group(1)
+        if 'LONG' in badge:
+            decision = 'LONG'
+        elif 'SHORT' in badge:
+            decision = 'SHORT'
 
     return {
         'ticker': ticker,
@@ -97,8 +105,8 @@ def main():
         print("\nNo results. Check that main.py runs correctly.")
         return
 
-    # Sort by confidence (primary) then winrate (secondary)
-    results.sort(key=lambda r: (r['confidence'], r['winrate']), reverse=True)
+    # Sort by expected value: confidence × winrate (as promised in docstring)
+    results.sort(key=lambda r: r['confidence'] * r['winrate'] / 100, reverse=True)
 
     # Generate ranking file
     output_path = os.path.join(base_dir, 'stock-ranking-result.txt')

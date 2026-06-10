@@ -131,7 +131,7 @@ FEATURES = [c for c in [
 # MAIN
 # ===========================================================================
 
-def run_catboost_bayes(csv_file, n_trials=30):
+def run_catboost_bayes(csv_file, n_trials=10):
     global FEATURES
     print("=" * 60)
     print("BAYESIAN-OPTIMIZED CATBOOST (BO-CatBoost)")
@@ -420,6 +420,6 @@ def run_catboost_bayes(csv_file, n_trials=30):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='BO-CatBoost')
     parser.add_argument('csv_file', type=str)
-    parser.add_argument('--n_trials', type=int, default=30)
+    parser.add_argument('--n_trials', type=int, default=10)
     args = parser.parse_args()
     run_catboost_bayes(args.csv_file, n_trials=args.n_trials)
